@@ -129,8 +129,10 @@ A program can take `IM_READER_DATABASE_URL` from that file, or, with libpq (psyc
 
 ## Lattice, removed (2026-11-11)
 
-Lattice, the old presentation app, left the deploy on 2026-11-11, and with it its MCP endpoint for claude.ai: the
-connector stops working until M5 builds the MCP server into this repo (SPEC §2 keeps the contract it must honor).
+Lattice, the old presentation app, left the deploy on 2026-11-11, and with it its MCP endpoint for claude.ai. `im web`
+serves the MCP server again (M5): on the tailnet at `/mcp` on the web view's address (8445), with `IM_WEB_TOKEN` as a
+bearer header. The claude.ai connector needs the public listener behind OAuth, which comes next (M5's slice 2).
+
 The next run of `install/nas.sh` after the change, and every one after it, does nothing once these are gone:
 - removes the `lattice` and `lattice-tunnel` (cloudflared) containers and their images, and Lattice's address on
   the tailnet (`tailscale serve` on 8444);

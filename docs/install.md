@@ -16,6 +16,7 @@ uv run im load-fixtures           # a synthetic Hearsay stream in $IM_STREAM_DIR
 uv run im run                     # import + segment + queue taps and notes to self + extract ideas with Claude + match; idempotent
 uv run im queue                   # the attention queue: what I tapped the pendant for or called a note to self, with its lines, newest first
 uv run im queue remove 3          # take item #3 off the queue (only marks it removed; nothing else changes)
+uv run im demo on                 # demo mode for every page and the MCP server, every device; `off` turns it off, alone `status`
 uv run im pending                 # what the next run would send, and what the re-read gate holds per stage, with its estimated cost; sends nothing
 uv run im reread extract --limit 20   # approve held re-reads: 20 episodes read again under the current prompt (0: only the count and estimate)
 uv run im ideas                   # what Claude captured; --review to keep or discard each item
@@ -73,9 +74,11 @@ Settings are env vars:
 - `ANTHROPIC_API_KEY` (or an `ant auth login` profile): for idea extraction. Without it `im run` skips extraction
   and says so. What's sent, and how, is in [decisions/0004-claude-extraction.md](decisions/0004-claude-extraction.md).
 - `IM_WEB_DATABASE_URL` and `IM_WEB_TOKEN`: for `im web`, the neutral view (every cluster past the gates, newest
-  first, no score; [decision 0007](decisions/0007-neutral-proposals.md)). It reads `pub` and appends feedback as
-  role `lattice_app`, logs in with its token, and listens on 127.0.0.1:8792. A link toggles demo mode, where
-  nothing sensitive shows and nothing can be kept or dismissed; `im web --demo` serves demo mode only.
+  first, no score; [decision 0007](decisions/0007-neutral-proposals.md)), and the MCP server at `/mcp` (`im.mcp`:
+  Lattice's 19 tools, the token as a bearer header). It reads `pub` and appends feedback as role `lattice_app`, logs
+  in with its token, and listens on 127.0.0.1:8792. Demo mode, where nothing sensitive shows on any page or in any MCP
+  answer and nothing can be kept or dismissed, is the app's one setting: `/demo` turns it on for every device and off
+  only with the token, `im demo on|off` does the same from the shell, and `im web --demo` forces it on.
 - `IM_DEV_ADMIN_URL`: the local dev superuser, used only by tests to create and drop `im_test`. Code refuses it
   unless every host it (or `PGHOST`) names is localhost, a loopback address or a socket directory. Each test gets a
   fresh `im_test` database and stream directory, and none of the other settings here.

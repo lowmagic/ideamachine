@@ -296,15 +296,16 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
 - **Correction.** An `idea_correct` event that replaces a cluster's title or statement (011), or reverts one with an
   empty value. `im idea edit` writes it (`im.idea`, source `cli`); Lattice did until 2026-11-11.
 - **Feedback event.** A recorded action or judgment of mine (`pub.feedback_events`, 008:88-98). `source` says where I
-  made it: `cli` or `emanation`, `merge` for what a merge carried to the cluster kept (`merge.MERGED`), and `lattice`
-  or `mcp` for Lattice's, until 2026-11-11. Where events disagree, my latest is the one with the highest `event_id`;
-  `at` bounds time windows and orders nothing (SPEC.md:95-97, 043).
-  The feedback event kinds, from the CHECK at 031:7-11 and 061:5-9:
+  made it: `cli`, `emanation` or `mcp` (the MCP server, `im.mcp`, since M5; Lattice's until 2026-11-11), `merge` for
+  what a merge carried to the cluster kept (`merge.MERGED`), and `lattice` for Lattice's app. Where events disagree,
+  my latest is the one with the highest `event_id`; `at` bounds time windows and orders nothing (SPEC.md:95-97, 043).
+  The feedback event kinds, from the CHECK at 031:7-11, 061:5-9 and 068:
   - on clusters: `idea_keep` (payload `as`: `canonical` or `pinned`), `idea_unkeep`, `idea_dismiss` (payload
     `reason`, optional: see Dismissal reason), `idea_add`, `star`, `unstar`, `link`, `unlink`, `idea_note`,
     `idea_correct`, `idea_sensitive`, `idea_distinct`;
   - on themes: `pin_theme`, `unpin_theme`, `rename_theme`, `reject_theme`, `merge_theme`, `split_theme`,
     `file_idea`, `unfile_idea`, `theme_sensitive`;
+  - on the app: `demo_on`, `demo_off` (demo mode, the one setting; they name nothing, 068);
   - legacy, still in the ledger but read by nothing that orders or gates ([0007]): `keep` and `discard` (nothing
     writes these), `item_keep`, `item_discard`, `item_star`, `idea_compare`, `digest_star`, `digest_dismiss`, and `vocab_add`, `vocab_remove`
     (vocabulary suggestions, retired by [0012]).
@@ -553,15 +554,18 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   - `project`: something forming that I could build, write or do;
   - `outside_value`: an idea worth something to a thoughtful stranger.
 - **MCP connector.** The tool interface through which MCP clients, such as claude.ai, query Idea Machine and submit
-  feedback events. Its tools' names, arguments and results are a contract (SPEC §2, [0005]).
+  feedback events (`im.mcp`, served by `im web` at `/mcp`). Its tools' names, arguments and results are a contract
+  (SPEC §2, [0005]). **Status:** on the tailnet behind the web token since M5's slice 1; the public listener for
+  claude.ai and ChatGPT, behind OAuth, is slice 2.
 - **Sensitivity tags.** Eight descriptive tags on a cluster or theme: `profanity`, `sex`, `gender_politics`,
   `politics`, `drugs`, `offensive`, `violence`, `private_person` (anything about a specific private individual). Jev
   answers one yes or no per tag, its probabilities kept beside them (`sensitivity.TAGS`; 027, 051). They describe;
   anything tagged counts as sensitive in `pub.sensitivity` unless my mark says otherwise. My marks win.
-- **Demo mode.** A mode of any presentation layer in which nothing sensitive is shown, enforced in the data it reads
-  (`pub.demo_*`, 052): a sensitive card keeps its place, counts and edges with no words (`redacted`), and its quotes
-  and sensitive themes aren't listed. A map blanks such a card; a list leaves it out. The neutral view has a toggle,
-  and `im web --demo` serves nothing else.
+- **Demo mode.** The app's one setting (`pub.app_settings`, 068), under which no presentation and no MCP answer shows
+  anything sensitive, enforced in the data they read (`pub.demo_*`, 052): a sensitive card keeps its place, counts and
+  edges with no words (`redacted`), and its quotes and sensitive themes aren't listed. A map blanks such a card; a list
+  leaves it out; the MCP server withholds it and blacks out swearing. It's on or off for every device at once: on from
+  `/demo`, off only with the token, `im demo on|off` from the shell, and `im web --demo` forces it on.
 
 ## Models and measurement
 
