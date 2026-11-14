@@ -225,16 +225,22 @@ def test_demo_mode_blanks_a_sensitive_star_and_leaves_it_out_of_every_list(match
                                              (new,)).fetchall()) == [(0,)]
 
 
-def test_demo_mode_is_a_toggle_and_takes_nothing(served, matched):  # noqa: F811
+def test_demo_mode_is_one_setting_off_only_with_the_token_and_takes_nothing(served, matched):  # noqa: F811
     new = str(idea(matched, "Something new"))
     _, headers, _ = request(served, "POST", "/login", f"token={TOKEN}")
     cookie = headers["Set-Cookie"].split(";")[0]
-    status, headers, _ = request(served, "GET", "/demo?on=1", cookie=cookie)
-    demo = cookie + "; " + headers["Set-Cookie"].split(";")[0]
-    assert status == 303 and "leave demo mode" in request(served, "GET", "/", cookie=demo)[2]
-    assert request(served, "POST", f"/idea/{new}", "action=dismiss", demo)[0] == 403
-    assert request(served, "POST", f"/idea/{new}", "action=dismiss&reason=not_for_me", demo)[0] == 403
-    assert "saying why" not in request(served, "GET", f"/idea/{new}", cookie=demo)[2]
+    assert request(served, "POST", "/demo", "action=on", cookie)[0] == 303
+    assert "Set-Cookie" not in request(served, "POST", "/demo", "action=on", cookie)[1]   # the app's, not a browser's
+    assert "leave demo mode" in request(served, "GET", "/", cookie=cookie)[2]
+    assert request(served, "POST", f"/idea/{new}", "action=dismiss", cookie)[0] == 403
+    assert request(served, "POST", f"/idea/{new}", "action=dismiss&reason=not_for_me", cookie)[0] == 403
+    assert "saying why" not in request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    # Whoever I hand the phone to can't turn it off: that takes the token.
+    assert request(served, "POST", "/demo", "action=off", cookie)[0] == 403
+    assert request(served, "POST", "/demo", "action=off&token=another-long-enough-token", cookie)[0] == 403
+    assert "leave demo mode" in request(served, "GET", "/", cookie=cookie)[2]
+    assert request(served, "POST", "/demo", f"action=off&token={TOKEN}", cookie)[0] == 303
+    assert "leave demo mode" not in request(served, "GET", "/", cookie=cookie)[2]
 
 
 def test_a_dismissal_may_say_why_and_each_reason_is_counted(matched, admin, monkeypatch, capsys):  # noqa: F811

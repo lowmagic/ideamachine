@@ -366,7 +366,7 @@ def test_the_web_role_can_read_pub_append_feedback_and_call_its_functions_and_no
     assert role_can(admin, "lattice_app") == {
         "relations": {("pub", r, "SELECT") for r in pub} | {("pub", "feedback_events", "INSERT")},
         "columns": set(), "sequences": set(),
-        "functions": {("pub", "card_neighbours"), ("pub", "embedding_model")},
+        "functions": {("pub", "card_neighbours"), ("pub", "embedding_model"), ("pub", "ideas_near")},
         "schemas": {("pub", "USAGE")}, "roles": set()}
     # They run as their owner (SECURITY DEFINER), reading im: only the roles granted them may call them, not PUBLIC.
     assert admin.execute("""SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace

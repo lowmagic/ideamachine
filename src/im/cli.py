@@ -602,10 +602,20 @@ def cmd_import_chatgpt(args) -> None:
 
 
 def cmd_web(args) -> None:
-    """Serve the neutral view as its own role (IM_WEB_DATABASE_URL), never as im_pipeline."""
+    """Serve the neutral view and the MCP server as its own role (IM_WEB_DATABASE_URL), never as im_pipeline."""
     from im import web
 
     web.serve(args.host, args.port, args.demo)
+
+
+def cmd_demo(args) -> None:
+    """Demo mode, the app's one setting: every page and the MCP server, on every device."""
+    from im import mcp, web
+
+    with db.connect(db.pipeline_dsn()) as conn:
+        if args.action in ("on", "off"):
+            web.set_demo(conn, args.action == "on", source="cli")
+        print(f"demo mode is {'on' if mcp.demo_on(conn) else 'off'}")
 
 
 def cmd_lattice(args) -> None:
@@ -1028,11 +1038,16 @@ def main(argv=None) -> None:
     qu.add_argument("id", nargs="?", type=int, help="remove: the item's id, as listed")
     qu.set_defaults(func=cmd_queue)
     sub.add_parser("check", help="run invariant queries; exit 1 on failure").set_defaults(func=cmd_check)
-    wb = sub.add_parser("web", help="serve the neutral view (every cluster, newest first, no score)")
+    wb = sub.add_parser("web", help="serve the neutral view (every cluster, newest first, no score) and the MCP "
+                        "server (/mcp, the token as a bearer header)")
     wb.add_argument("--host", default="127.0.0.1")
     wb.add_argument("--port", type=int, default=8792)
-    wb.add_argument("--demo", action="store_true", help="demo mode on every page, with no way out of it: nothing "
-                    "sensitive is shown (the demo views)")
+    wb.add_argument("--demo", action="store_true", help="demo mode on every page and the MCP server, with no way "
+                    "out of it: nothing sensitive is shown (the demo views)")
     wb.set_defaults(func=cmd_web)
+    dm = sub.add_parser("demo", help="demo mode, the app's one setting: every page and the MCP server hide "
+                        "everything sensitive, on every device")
+    dm.add_argument("action", nargs="?", default="status", choices=["on", "off", "status"])
+    dm.set_defaults(func=cmd_demo)
     args = p.parse_args(argv)
     args.func(args)

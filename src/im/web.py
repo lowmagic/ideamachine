@@ -14,9 +14,13 @@ conversations; and Apart (`/apart`), the near pairs the connection judge kept ap
 Life turned in three dimensions, and Grid (`/grid`), a cell a lens, a neighborhood standing in for each lens until
 lenses exist. They only read.
 
-Demo mode (a toggle, or `im web --demo` for nothing else) reads the `demo` views instead of `pub`'s, so nothing
-sensitive is there to show: the sky keeps a sensitive cluster's star, blank, with its edges, and the lists (the
-feed, a card's quotes and connections) leave it out. Nothing can be kept or dismissed in demo mode.
+Demo mode is the app's one setting (pub.app_settings): `/demo` turns it on from any device, and off again only with
+the token, so whoever I hand the phone to can't; `im demo on|off` does it from the shell, and `im web --demo` forces
+it on. While it's on, every page reads the `demo` views instead of `pub`'s, so nothing sensitive is there to show:
+the sky keeps a sensitive cluster's star, blank, with its edges, and the lists (the feed, a card's quotes and
+connections) leave it out. Nothing can be kept or dismissed in demo mode.
+
+It also serves the MCP server (im.mcp) at /mcp, behind the same token as a bearer header, demo mode included.
 
 It connects as its own role (IM_WEB_DATABASE_URL, role lattice_app: read pub, append feedback), never as
 im_pipeline, and logs in with its token (IM_WEB_TOKEN), exchanged once per device for a signed cookie. Loopback only:
@@ -38,12 +42,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import psycopg
 
+from im import mcp
 from im.feedback import DismissReason
 
 DATABASE_ENV = "IM_WEB_DATABASE_URL"
 TOKEN_ENV = "IM_WEB_TOKEN"
 COOKIE = "emanation_session"
-DEMO_COOKIE = "emanation_demo"
 PAGE = 50
 SHOW = {  # which maturities the feed shows, and the tab's name
     "candidates": (("candidate", "idea"), "candidates and ideas"),
@@ -124,7 +128,7 @@ def feed(conn, show: str = "candidates", page: int = 0, demo: bool = False) -> s
     tabs = " ".join(f'<a href="/?show={k}"{" aria-current=page" if k == show else ""}>{name}</a>'
                     for k, (_, name) in SHOW.items()) + ' <a href="/sky">sky</a> <a href="/trails">trails</a>' \
         + ' <a href="/echoes">echoes</a> <a href="/threads">threads</a> <a href="/apart">apart</a> <a href="/crossroads">crossroads</a> <a href="/tree">tree</a> <a href="/grid">grid</a>' \
-        + f' <a href="/demo?on={0 if demo else 1}">{"leave demo mode" if demo else "demo mode"}</a>'
+        + f' <a href="/demo">{"leave demo mode" if demo else "demo mode"}</a>'
     cards = "".join(f'<li><a href="/idea/{r["idea_id"]}">{_e(r["title"])}</a><p>{_e(r["statement"])}</p>'
                     f'<small>{_e(_facts(r))}</small></li>' for r in rows[:PAGE])
     more = f'<a href="/?show={_e(show)}&page={page + 1}">older</a>' if len(rows) > PAGE else ""
@@ -716,6 +720,28 @@ def act(conn, idea_id: str, action: str, reason: str | None = None, of: str | No
                  (kind, idea_id, payload))
 
 
+def set_demo(conn, on: bool, source: str = "emanation") -> None:
+    """Turn demo mode, the app's one setting, on or off: my feedback event, the latest of which wins."""
+    conn.execute("INSERT INTO pub.feedback_events (kind, payload, source) VALUES (%s, '{}', %s)",
+                 ("demo_on" if on else "demo_off", source))
+
+
+def demo_page(on: bool, forced: bool, message: str = "") -> str:
+    """/demo: turn demo mode on, or off with the token."""
+    if forced:
+        body = "<p>Demo mode is on, and this server was started with --demo: it can't be turned off here.</p>"
+    elif on:
+        body = ('<p>Demo mode is on for every page and the MCP server. Turning it off takes the token.</p>'
+                f'<p>{_e(message)}</p><form method="post" action="/demo"><input type="hidden" name="action" '
+                'value="off"><input type="password" name="token" autofocus> <button>Turn it off</button></form>')
+    else:
+        body = ("<p>Demo mode hides everything sensitive from every page and the MCP server, on every device, until "
+                "it's turned off with the token.</p><form method=\"post\" action=\"/demo\"><input type=\"hidden\" "
+                "name=\"action\" value=\"on\"><button>Turn it on</button></form>")
+    return _page("Demo mode", body)
+
+
+
 def _page(title: str, body: str) -> str:
     return f"""<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1"><title>{_e(title)}</title>
@@ -757,8 +783,37 @@ class Handler(BaseHTTPRequestHandler):
     dsn = ""
     demo_only = False   # im web --demo: demo mode, and no way out of it
 
-    def _demo(self) -> bool:
-        return self.demo_only or _cookie(self.headers.get("Cookie"), DEMO_COOKIE) == "1"
+    def _demo(self, conn) -> bool:
+        return self.demo_only or mcp.demo_on(conn)
+
+    def _json(self, code: int, obj, headers: dict | None = None) -> None:
+        self._send(code, json.dumps(obj), {"Cache-Control": "no-store"} | (headers or {}), "application/json")
+
+    def _mcp(self) -> None:
+        """MCP over Streamable HTTP (im.mcp): a bearer token, then JSON-RPC, a batch or one message, answered with
+        JSON. A browser page can't use it: a request with a foreign Origin is refused outright."""
+        given = (self.headers.get("Authorization") or "").removeprefix("Bearer ")
+        if not (given and hmac.compare_digest(given.encode(), _token().encode())):
+            return self._json(401, {"error": "bearer token required"}, {"WWW-Authenticate": "Bearer"})
+        origin = self.headers.get("Origin")
+        if origin and urlsplit(origin).netloc != self.headers.get("Host"):
+            return self._json(403, {"error": "foreign origin"})
+        n = min(int(self.headers.get("Content-Length") or 0), 65536)
+        try:
+            message = json.loads(self.rfile.read(n) or b"null")
+        except ValueError:
+            return self._json(400, mcp._error(None, -32700, "parse error"))
+        connect = lambda: psycopg.connect(self.dsn, autocommit=True)  # noqa: E731
+        if isinstance(message, list):   # a batch (older protocol versions)
+            answer = [a for a in (mcp.handle(m, connect, force_demo=self.demo_only) for m in message) if a is not None]
+        else:
+            answer = mcp.handle(message, connect, force_demo=self.demo_only)
+        if answer is None or answer == []:   # notifications only
+            return self._send(202, content_type="application/json")
+        self._json(200, answer)
+
+    def do_DELETE(self) -> None:   # MCP session teardown: there are no sessions
+        self._json(405, {"error": "no sessions"})
 
     def _send(self, code: int, body: str = "", headers: dict | None = None,
               content_type: str = "text/html; charset=utf-8") -> None:
@@ -788,17 +843,17 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path in STATIC:
             return self._send_static(url.path)
+        if url.path == "/mcp":   # no server-initiated stream
+            return self._json(405, {"error": "POST only"}, {"Allow": "POST"})
         if url.path == "/login":
             return self._send(200, _LOGIN)
         if not logged_in(self.headers.get("Cookie")):
             return self._send(303, headers={"Location": "/login"})
         q = {k: v[0] for k, v in parse_qs(url.query).items()}
-        if url.path == "/demo":   # the toggle: a cookie for this browser
-            on = "1" if self.demo_only or q.get("on") == "1" else "0"
-            return self._send(303, headers={"Location": "/", "Set-Cookie": f"{DEMO_COOKIE}={on}; Path=/; "
-                                            "Max-Age=31536000; HttpOnly; SameSite=Strict"})
-        demo = self._demo()
         with psycopg.connect(self.dsn, autocommit=True) as conn:
+            demo = self._demo(conn)
+            if url.path == "/demo":
+                return self._send(200, demo_page(demo, self.demo_only))
             if url.path == "/":
                 page = int(q["page"]) if q.get("page", "").isdigit() else 0
                 return self._send(200, feed(conn, q.get("show", "candidates"), page, demo))
@@ -835,6 +890,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         url = urlsplit(self.path)
+        if url.path == "/mcp":
+            return self._mcp()
         form = self._form()
         if url.path == "/login":
             if hmac.compare_digest(form.get("token", "").encode(), _token().encode()):
@@ -844,12 +901,22 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(403, _LOGIN)
         if not logged_in(self.headers.get("Cookie")):
             return self._send(403, _LOGIN)
+        if url.path == "/demo":
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                if form.get("action") == "on":
+                    set_demo(conn, True)
+                elif form.get("action") == "off" and not self.demo_only and \
+                        hmac.compare_digest(form.get("token", "").encode(), _token().encode()):
+                    set_demo(conn, False)
+                else:
+                    return self._send(403, demo_page(self._demo(conn), self.demo_only, "That token didn't work."))
+            return self._send(303, headers={"Location": "/"})
         m = re.fullmatch(r"/idea/([0-9a-f-]{36})", url.path)
         if not (m and _UUID.match(m[1]) and form.get("action") in ACTIONS):
             return self._send(400, _page("Bad request", "Bad request."))
-        if self._demo():
-            return self._send(403, _page("Demo mode", "Nothing can be kept or dismissed in demo mode."))
         with psycopg.connect(self.dsn, autocommit=True) as conn:
+            if self._demo(conn):
+                return self._send(403, _page("Demo mode", "Nothing can be kept or dismissed in demo mode."))
             try:
                 act(conn, m[1], form["action"], form.get("reason"), form.get("of"))
             except ValueError:

@@ -1,9 +1,9 @@
 # M5: the MCP server here, and lenses
 
-_2026-11-14. Status: plan; my answers of 2026-11-14 are in, nothing built. The design ROADMAP-v2's M5 row asks for.
-It settles how [decision 0005](../decisions/0005-presentation-inside-idea-machine.md)'s MCP server moves in under
-[SPEC §2](../SPEC.md#2-contracts)'s contract, and the storage [decision 0013](../decisions/0013-lenses-and-boards.md)
-leaves to M5._
+_2026-11-14. Status: plan, my answers of 2026-11-14 in; slice 1 built (migration 068, `im.mcp`). The design
+ROADMAP-v2's M5 row asks for. It settles how [decision 0005](../decisions/0005-presentation-inside-idea-machine.md)'s
+MCP server moves in under [SPEC §2](../SPEC.md#2-contracts)'s contract, and the storage
+[decision 0013](../decisions/0013-lenses-and-boards.md) leaves to M5._
 
 **Done when** (ROADMAP-v2): the claude.ai connector works unchanged against the new endpoint, and 5 canonical lenses
 are judged useful.
@@ -187,6 +187,9 @@ proposer makes themes. In M5 each theme becomes a lens judged on its own: its na
 One PR each, in order:
 
 1. `pub` additions, the MCP server on the tailnet, and demo mode as one setting, with Lattice's tests ported.
+   **Built:** migration 068 (`pub.ideas`' columns, `pub.ideas_near`, `demo_on`/`demo_off`, `pub.app_settings`),
+   `im.mcp` served by `im web` at `/mcp`, `im demo`, `tests/test_mcp.py`. The server calls itself `ideamachine`
+   (`serverInfo` isn't part of the contract).
 2. The public listener, OAuth for Claude and ChatGPT, and the tunnel in `install/`. Done when both connectors work.
 3. Lens storage and events, kinds `all` and `none`, pins, filters, `pub.lens_members`, `/lens/<id>`, `open_lens`;
    boards stored, the Tree and the Grid reading them.
