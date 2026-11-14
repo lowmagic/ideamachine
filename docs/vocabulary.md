@@ -555,8 +555,8 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   - `outside_value`: an idea worth something to a thoughtful stranger.
 - **MCP connector.** The tool interface through which MCP clients, such as claude.ai, query Idea Machine and submit
   feedback events (`im.mcp`, served by `im web` at `/mcp`). Its tools' names, arguments and results are a contract
-  (SPEC §2, [0005]). **Status:** on the tailnet behind the web token since M5's slice 1; the public listener for
-  claude.ai and ChatGPT, behind OAuth, is slice 2.
+  (SPEC §2, [0005]). **Status:** on the tailnet behind the web token since M5's slice 1; for claude.ai and ChatGPT
+  through the public listener behind OAuth since slice 2 (`im.oauth`, docs/deploy.md).
 - **Sensitivity tags.** Eight descriptive tags on a cluster or theme: `profanity`, `sex`, `gender_politics`,
   `politics`, `drugs`, `offensive`, `violence`, `private_person` (anything about a specific private individual). Jev
   answers one yes or no per tag, its probabilities kept beside them (`sensitivity.TAGS`; 027, 051). They describe;

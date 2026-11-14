@@ -117,18 +117,18 @@ fi
 chmod 700 "$NAS_PG"
 
 say "Retiring Lattice (removed from the deploy 2026-11-11; docs/deploy.md)"
-# Lattice, its public MCP listener and the Cloudflare tunnel to it, their images, Lattice's tailnet address, and its
-# config, whose database URL and token the web view keeps under its own names. Does nothing once they're gone.
+# Lattice, its tunnel's container (Idea Machine's own is ideamachine-tunnel, below), its image, Lattice's tailnet
+# address, and its config, whose database URL and token the web view keeps under its own names. Does nothing once
+# they're gone.
 for c in lattice-tunnel lattice; do
     docker container inspect "$c" >/dev/null 2>&1 || continue
     docker rm -f "$c" >/dev/null
     echo "removed container $c"
 done
-for image in lattice cloudflare/cloudflared:2026.9.3; do
-    docker image inspect "$image" >/dev/null 2>&1 || continue
-    docker image rm "$image" >/dev/null
-    echo "removed image $image"
-done
+if docker image inspect lattice >/dev/null 2>&1; then
+    docker image rm lattice >/dev/null
+    echo "removed image lattice"
+fi
 # The Tailscale app (TrueNAS UI: Apps) runs tailscaled in a container on the host network.
 ts="$(docker ps --format '{{.Names}} {{.Image}}' | awk 'tolower($2) ~ /tailscale/ {print $1; exit}')"
 lattice_https_port=8444
@@ -154,7 +154,6 @@ env_rename "$NAS_WEB_ENV" LATTICE_DATABASE_URL IM_WEB_DATABASE_URL
 env_rename "$NAS_WEB_ENV" LATTICE_TOKEN IM_WEB_TOKEN
 for key in LATTICE_PUBLIC_URL LATTICE_MCP_ALLOW LATTICE_DEMO_HIDE; do env_delete "$NAS_WEB_ENV" "$key"; done
 env_rename "$NAS_DB_ENV" LATTICE_APP_PASSWORD IM_WEB_PASSWORD
-[ ! -e "$NAS_CONFIG/cloudflared.env" ] || { rm -f "$NAS_CONFIG/cloudflared.env"; echo "removed the tunnel's token"; }
 echo "ok"
 
 say "Secrets in $NAS_CONFIG"
@@ -175,6 +174,8 @@ fi
 env_ensure "$NAS_WEB_ENV" IM_WEB_DATABASE_URL \
     "postgresql://lattice_app:$(env_get "$NAS_DB_ENV" IM_WEB_PASSWORD)@db:5432/im"
 env_ensure "$NAS_WEB_ENV" IM_WEB_TOKEN "$(openssl rand -base64 24 | tr -d '/+=')"
+# The tunnel for the public MCP listener (below). Always present, so compose can load; empty until it's used.
+touch "$NAS_CONFIG/cloudflared.env"; chmod 600 "$NAS_CONFIG/cloudflared.env"
 # The read-only role's connection, through Postgres on the loopback, for other programs on the NAS: the apps group
 # can read it, nobody else. Rewritten on every run from db.env.
 reader_pw="$(env_get "$NAS_DB_ENV" IM_READER_PASSWORD)"
@@ -293,6 +294,30 @@ say "Checking that nothing already sent to Claude would be sent again"
 im pending --expect-none-resent || die "payloads differ from what was sent before (time zone?). Nothing is
     scheduled yet; fix this before re-running."
 
+say "ChatGPT's connector ranges"
+# The public MCP listener lets in Anthropic's range and these (src/im/oauth.py). OpenAI publishes them and changes
+# them, so every deploy fetches them again; the web view reads the file again when it changes. A directory mount, so
+# the file can be replaced whole.
+MCP_DIR="$NAS_CONFIG/mcp"
+RANGES="$MCP_DIR/chatgpt-ranges.txt"
+mkdir -p "$MCP_DIR"; chown "root:$APPS_GID" "$MCP_DIR"; chmod 750 "$MCP_DIR"
+touch "$RANGES"; chown "root:$APPS_GID" "$RANGES"; chmod 640 "$RANGES"
+PUBLIC_URL="$(env_get "$NAS_WEB_ENV" IM_PUBLIC_URL)"
+if [ -z "$PUBLIC_URL" ]; then
+    echo "not needed: the public listener is off"
+elif curl -fsS --max-time 30 https://openai.com/chatgpt-connectors.json | python3 -c '
+import ipaddress, json, sys
+nets = [str(ipaddress.ip_network(p.get("ipv4Prefix") or p["ipv6Prefix"])) for p in json.load(sys.stdin)["prefixes"]]
+assert nets, "no prefixes"
+print("\n".join(nets))' > "$RANGES.part"; then
+    chown "root:$APPS_GID" "$RANGES.part"; chmod 640 "$RANGES.part"; mv -f "$RANGES.part" "$RANGES"
+    echo "$(wc -l < "$RANGES") networks from openai.com/chatgpt-connectors.json in $RANGES"
+else
+    rm -f "$RANGES.part"
+    echo "WARNING: couldn't fetch openai.com/chatgpt-connectors.json; keeping the $(wc -l < "$RANGES") networks from"
+    echo "the last deploy. With none, ChatGPT can't connect until a deploy fetches them."
+fi
+
 say "The web view (im web; tailscale serve, HTTPS port $WEB_HTTPS_PORT)"
 "${COMPOSE[@]}" up -d web
 for _ in $(seq 30); do
@@ -312,6 +337,31 @@ else
     WEB_URL="(not published: no Tailscale container found)"
     echo "No Tailscale container found. Publish it by hand:"
     echo "    tailscale serve --bg --https=$WEB_HTTPS_PORT http://127.0.0.1:8792"
+fi
+
+say "The public MCP listener (claude.ai, the Claude apps, ChatGPT; docs/deploy.md)"
+if [ -n "$PUBLIC_URL" ]; then
+    if [ -z "$(env_get "$NAS_CONFIG/cloudflared.env" TUNNEL_TOKEN)" ]; then
+        # Manual: Cloudflare dashboard -> Zero Trust -> Networks -> Tunnels -> the tunnel -> its install command.
+        read -rsp "Cloudflare tunnel token for $PUBLIC_URL (input hidden): " key; echo
+        env_ensure "$NAS_CONFIG/cloudflared.env" TUNNEL_TOKEN "$key"
+    fi
+    "${COMPOSE[@]}" --profile public up -d tunnel
+    # From Anthropic's range but without a token, /mcp must ask for one (401): the listener is up and checks auth.
+    code="000"
+    for _ in $(seq 30); do
+        code="$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'CF-Connecting-IP: 160.79.104.1' \
+                http://127.0.0.1:8791/mcp)"
+        [ "$code" = 401 ] && break
+        sleep 1
+    done
+    [ "$code" = 401 ] || die "the public listener on 127.0.0.1:8791 answered $code, not 401 (journalctl -t
+    ideamachine-web)"
+    echo "the public listener answers (401 without a token)"
+    echo "on: $PUBLIC_URL/mcp (the WAF rules and connecting: docs/deploy.md)"
+else
+    "${COMPOSE[@]}" --profile public rm -sf tunnel >/dev/null 2>&1 || true
+    echo "off (set IM_PUBLIC_URL in $NAS_WEB_ENV to turn it on)"
 fi
 
 say "The run on corral's NAS worker (github.com/lowmagic/corral)"
@@ -425,6 +475,7 @@ The web view: $WEB_URL
     token: $(env_get "$NAS_WEB_ENV" IM_WEB_TOKEN)
     (in Safari on the phone: open it, log in, Share -> Add to Home Screen)
 Read-only access to pub, for other programs on the NAS (the apps group): $NAS_READER_ENV
+The public MCP listener: ${PUBLIC_URL:+$PUBLIC_URL/mcp}${PUBLIC_URL:-off (docs/deploy.md)}
 EOF
 if zfs list -H -o name "$OLD_POOL_DATASET" >/dev/null 2>&1; then
     cat <<EOF
@@ -443,6 +494,7 @@ if [ -d /mnt/fast/repos/lattice ]; then
 
 Lattice is no longer deployed (2026-11-11), and nothing here reads its clone. As admin:
     rm -rf /mnt/fast/repos/lattice
-Its Cloudflare tunnel and public hostname, and the claude.ai connector, go by hand (docs/deploy.md).
+Its claude.ai connector goes by hand. Its Cloudflare tunnel can serve Idea Machine's public listener instead, or go by
+hand too (docs/deploy.md).
 EOF
 fi

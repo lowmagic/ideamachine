@@ -58,20 +58,39 @@ services:
 
   # The neutral view (src/im/web.py; decision 0007). Its own role and token, never the pipeline's. Loopback only:
   # tailscale serve publishes it to the tailnet over HTTPS. Never the LAN, never 0.0.0.0, never tailscale funnel:
-  # quotes include other people's words.
+  # quotes include other people's words. The exception is the public MCP listener on 8791, open only when
+  # IM_PUBLIC_URL is set in web.env: OAuth in front, published by the tunnel below (docs/deploy.md).
   web:
     image: ideamachine   # built by install/nas.sh with the run service
     container_name: ideamachine-web
     logging: *logging
     init: true
     user: "568:568"
-    env_file: /mnt/fast/ideamachine/config/web.env   # IM_WEB_DATABASE_URL, IM_WEB_TOKEN
+    env_file: /mnt/fast/ideamachine/config/web.env   # IM_WEB_DATABASE_URL, IM_WEB_TOKEN, IM_PUBLIC_URL (optional)
     environment:
       TZ: America/New_York
-    command: ["web", "--host", "0.0.0.0", "--port", "8792"]   # inside the container; the host port is loopback
+      # ChatGPT's connector ranges, which install/nas.sh fetches from OpenAI on every deploy.
+      IM_MCP_ALLOW_FILE: /config/mcp/chatgpt-ranges.txt
+    command: ["web", "--host", "0.0.0.0", "--port", "8792", "--mcp-port", "8791"]   # the host ports are loopback
+    volumes:
+      - /mnt/fast/ideamachine/config/mcp:/config/mcp:ro
     ports:
       - "127.0.0.1:8792:8792"
+      - "127.0.0.1:8791:8791"
     depends_on:
       db:
         condition: service_healthy
+    restart: unless-stopped
+
+  # The Cloudflare tunnel to the public MCP listener (docs/deploy.md), started by install/nas.sh only when
+  # IM_PUBLIC_URL is set. Outbound only: nothing on the NAS is opened to the internet. Its route (the public hostname
+  # to http://127.0.0.1:8791) is set in Cloudflare's dashboard; host networking lets it reach the loopback port.
+  tunnel:
+    image: cloudflare/cloudflared:2026.9.3
+    container_name: ideamachine-tunnel
+    logging: *logging
+    profiles: ["public"]
+    network_mode: host
+    env_file: /mnt/fast/ideamachine/config/cloudflared.env   # TUNNEL_TOKEN
+    command: ["tunnel", "--no-autoupdate", "run"]
     restart: unless-stopped

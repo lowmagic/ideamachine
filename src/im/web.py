@@ -24,7 +24,8 @@ It also serves the MCP server (im.mcp) at /mcp, behind the same token as a beare
 
 It connects as its own role (IM_WEB_DATABASE_URL, role lattice_app: read pub, append feedback), never as
 im_pipeline, and logs in with its token (IM_WEB_TOKEN), exchanged once per device for a signed cookie. Loopback only:
-tailscale serve publishes it to the tailnet (install/nas.sh).
+tailscale serve publishes it to the tailnet (install/nas.sh). The one exception is the public MCP listener
+(PublicHandler), opened only when IM_PUBLIC_URL is set: a Cloudflare tunnel publishes it, behind OAuth (im.oauth).
 """
 
 import hashlib
@@ -34,15 +35,16 @@ import json
 import math
 import os
 import re
+import threading
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from importlib.resources import files
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, urlencode, urlsplit
 
 import psycopg
 
-from im import mcp
+from im import mcp, oauth
 from im.feedback import DismissReason
 
 DATABASE_ENV = "IM_WEB_DATABASE_URL"
@@ -777,6 +779,7 @@ _ECHOES = (files("im") / "echoes.html").read_text()
 _THREADS = (files("im") / "threads.html").read_text()
 _TREE = (files("im") / "tree.html").read_text()
 _GRID = (files("im") / "grid.html").read_text()
+_AUTHORIZE = (files("im") / "authorize.html").read_text()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -790,11 +793,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(code, json.dumps(obj), {"Cache-Control": "no-store"} | (headers or {}), "application/json")
 
     def _mcp(self) -> None:
-        """MCP over Streamable HTTP (im.mcp): a bearer token, then JSON-RPC, a batch or one message, answered with
-        JSON. A browser page can't use it: a request with a foreign Origin is refused outright."""
+        """MCP over Streamable HTTP (im.mcp) for tailnet clients: the web token as a bearer header."""
         given = (self.headers.get("Authorization") or "").removeprefix("Bearer ")
         if not (given and hmac.compare_digest(given.encode(), _token().encode())):
             return self._json(401, {"error": "bearer token required"}, {"WWW-Authenticate": "Bearer"})
+        self._answer_mcp(writes=True)
+
+    def _answer_mcp(self, writes: bool) -> None:
+        """One MCP exchange, once the caller is authenticated: JSON-RPC, a batch or one message, answered with JSON.
+        A browser page can't use it: a request with a foreign Origin is refused outright."""
         origin = self.headers.get("Origin")
         if origin and urlsplit(origin).netloc != self.headers.get("Host"):
             return self._json(403, {"error": "foreign origin"})
@@ -804,10 +811,11 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json(400, mcp._error(None, -32700, "parse error"))
         connect = lambda: psycopg.connect(self.dsn, autocommit=True)  # noqa: E731
+        handle = lambda m: mcp.handle(m, connect, writes, force_demo=self.demo_only)  # noqa: E731
         if isinstance(message, list):   # a batch (older protocol versions)
-            answer = [a for a in (mcp.handle(m, connect, force_demo=self.demo_only) for m in message) if a is not None]
+            answer = [a for a in map(handle, message) if a is not None]
         else:
-            answer = mcp.handle(message, connect, force_demo=self.demo_only)
+            answer = handle(message)
         if answer is None or answer == []:   # notifications only
             return self._send(202, content_type="application/json")
         self._json(200, answer)
@@ -924,13 +932,131 @@ class Handler(BaseHTTPRequestHandler):
         self._send(303, headers={"Location": f"/idea/{m[1]}"})
 
 
-def serve(host: str, port: int, demo: bool = False) -> None:
-    """`demo`: demo mode for every page, with no way out of it."""
+class PublicHandler(Handler):
+    """The MCP endpoint alone, for the clients that connect from their own clouds (claude.ai and the Claude apps,
+    ChatGPT), reached through a Cloudflare tunnel at IM_PUBLIC_URL, with OAuth (im.oauth) in front of it. Nothing else
+    is served here: no page, no login.
+
+    Everything but the sign-in page must come from an allowed network (oauth.mcp_allow: Anthropic's range and
+    ChatGPT's), by the client address Cloudflare reports; anything else gets an empty 404. The sign-in page is opened in
+    my own browser, so it's open to any address, guarded by the web token and a cap on wrong guesses. Requests are
+    never logged.
+    """
+
+    def log_message(self, fmt, *args) -> None:   # no client addresses in the journal
+        pass
+
+    def _base(self) -> str:
+        return oauth.public_url()
+
+    def _allowed(self) -> bool:
+        return oauth.source_ok(self.headers.get("CF-Connecting-IP"))
+
+    def _nothing(self) -> None:
+        self._send(404, content_type="text/plain")
+
+    def _oauth_error(self, e: oauth.OAuthError) -> None:
+        self._json(e.status, {"error": e.error, "error_description": e.description})
+
+    def _sign_in(self, code: int, message: str = "", request: str = "", client: str = "", host: str = "") -> None:
+        page = (_AUTHORIZE.replace("/*MESSAGE*/", _e(message)).replace("/*REQUEST*/", _e(request))
+                .replace("/*CLIENT*/", _e(client)).replace("/*HOST*/", _e(host)))
+        # The sign-in page can't be framed (clickjacking) and loads nothing from elsewhere.
+        self._send(code, page, {"X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer",
+                                "Cache-Control": "no-store",
+                                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; "
+                                "form-action 'self' https://claude.ai https://claude.com https://chatgpt.com; "
+                                "frame-ancestors 'none'"})
+
+    def _back_to(self, uri: str, **params) -> None:
+        params = {k: v for k, v in params.items() if v is not None} | {"iss": self._base()}   # RFC 9207, always
+        self._send(303, headers={"Location": uri + ("&" if "?" in uri else "?") + urlencode(params)})
+
+    def do_GET(self) -> None:
+        path, base = urlsplit(self.path).path, self._base()
+        if path == "/authorize":
+            return self._authorize_page()
+        if not self._allowed():
+            return self._nothing()
+        if path in ("/.well-known/oauth-protected-resource", "/.well-known/oauth-protected-resource/mcp"):
+            return self._json(200, oauth.protected_resource(base))
+        if path == "/.well-known/oauth-authorization-server":
+            return self._json(200, oauth.authorization_server(base))
+        if path == "/mcp":   # no server-initiated stream
+            return self._json(405, {"error": "POST only"}, {"Allow": "POST"})
+        self._nothing()
+
+    def do_POST(self) -> None:
+        path, base = urlsplit(self.path).path, self._base()
+        if path == "/authorize":
+            return self._authorize_submit()
+        if not self._allowed():
+            return self._nothing()
+        if path == "/mcp":
+            header = self.headers.get("Authorization")
+            grant = oauth.access(header)
+            if grant is None:
+                challenge = oauth.challenge_header(base, "invalid_token" if header else None)
+                return self._json(401, {"error": "sign in first"}, {"WWW-Authenticate": challenge})
+            return self._answer_mcp(writes=oauth.WRITE in grant["scopes"])
+        n = min(int(self.headers.get("Content-Length") or 0), 8192)
+        body = self.rfile.read(n)
+        try:
+            if path == "/register":
+                meta = json.loads(body or b"{}")
+                return self._json(201, oauth.register(meta if isinstance(meta, dict) else {}))
+            if path == "/token":
+                form = {k: v[0] for k, v in parse_qs(body.decode(errors="replace")).items()}
+                return self._json(200, oauth.token(base, form), {"Pragma": "no-cache"})
+        except ValueError:
+            return self._oauth_error(oauth.OAuthError("invalid_client_metadata", "JSON only"))
+        except oauth.OAuthError as e:
+            return self._oauth_error(e)
+        self._nothing()
+
+    def do_DELETE(self) -> None:
+        self._nothing()
+
+    def _authorize_page(self) -> None:
+        q = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+        try:
+            client, request = oauth.check_request(self._base(), q)
+        except oauth.Redirect as r:
+            return self._back_to(r.uri, error=r.error, error_description=r.description, state=r.state)
+        except oauth.OAuthError as e:
+            return self._sign_in(400, f"Can't sign in: {e.description}")
+        self._sign_in(200, "", request, client["name"], urlsplit(q["redirect_uri"]).hostname)
+
+    def _authorize_submit(self) -> None:
+        form = self._form()
+        if not oauth.login_allowed():
+            return self._sign_in(429, "Too many wrong tokens this hour. Try again later.")
+        r = oauth.verify("request", form.get("request", ""))
+        if r is None:
+            return self._sign_in(400, "This sign-in page expired. Start again from the app.")
+        if not hmac.compare_digest(form.get("token", "").encode(), _token().encode()):
+            oauth.login_failed()
+            return self._sign_in(401, "That token didn't work.", form["request"], "the app",
+                                 urlsplit(r["redirect"]).hostname)
+        g = oauth.grant(form["request"], allow_writes=form.get("writes") == "on")
+        self._back_to(g["redirect"], code=g["code"], state=g["state"])
+
+
+def serve(host: str, port: int, demo: bool = False, mcp_port: int = 8791) -> None:
+    """`demo`: demo mode for every page, with no way out of it. With IM_PUBLIC_URL set, the public MCP listener
+    (PublicHandler) on `mcp_port` too."""
     try:
         Handler.dsn = os.environ[DATABASE_ENV]
     except KeyError:
         raise SystemExit(f"{DATABASE_ENV} is not set (role lattice_app; see .env.example)") from None
     _token()
     Handler.demo_only = demo
+    public = oauth.public_url()   # fails fast on a bad URL or allow list
+    if public:
+        networks = oauth.mcp_allow()
+        server = ThreadingHTTPServer((host, mcp_port), PublicHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        print(f"public MCP listener on http://{host}:{mcp_port}/, published as {public}/mcp (OAuth), for "
+              f"{len(networks)} networks", flush=True)
     print(f"serving on http://{host}:{port}/" + (" in demo mode" if demo else ""), flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()

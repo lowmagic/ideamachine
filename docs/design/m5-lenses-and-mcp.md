@@ -40,10 +40,13 @@ In `im web`, as Lattice's did in `lattice serve`: the same process, role and con
   ranges, the other closes the sign-in page except while I add a connector. The app checks the caller's address
   again from `CF-Connecting-IP` against `IM_MCP_ALLOW`.
 - **For Claude and ChatGPT both.** Lattice's OAuth registered only Claude's two callbacks and let in only
-  Anthropic's range (`160.79.104.0/21`). Here the registration also takes ChatGPT's redirect URI, and the WAF rule
-  and `IM_MCP_ALLOW` also take OpenAI's published egress ranges. ChatGPT expects the issuer in the authorization
-  response (RFC 9207), which Lattice's OAuth already sends. More ranges let more callers knock; OAuth still decides
-  who gets in.
+  Anthropic's range (`160.79.104.0/21`). Here the registration also takes ChatGPT's stable redirect URI
+  (`https://chatgpt.com/connector_platform_oauth_redirect`, which ChatGPT uses when the server sends the issuer in
+  every authorization response, RFC 9207, as Lattice's OAuth already did). OpenAI publishes ChatGPT's egress ranges
+  (`openai.com/chatgpt-connectors.json`: 289 networks on 2026-11-14, and they change), too many to keep by hand in a
+  WAF rule. So `install/nas.sh` fetches them on every deploy into a file the app reads beside `IM_MCP_ALLOW`
+  (`IM_MCP_ALLOW_FILE`), and the WAF rule checks paths, not addresses: the address check is the app's alone. More
+  ranges let more callers knock; OAuth still decides who gets in.
 - **Not Tailscale Funnel:** it hides the caller's address from the app (tailscale#12972), and it has no edge rules,
   so OAuth would be the only guard, and the sign-in page couldn't be closed between connectors.
 
@@ -191,6 +194,9 @@ One PR each, in order:
    `im.mcp` served by `im web` at `/mcp`, `im demo`, `tests/test_mcp.py`. The server calls itself `ideamachine`
    (`serverInfo` isn't part of the contract).
 2. The public listener, OAuth for Claude and ChatGPT, and the tunnel in `install/`. Done when both connectors work.
+   **Built:** `im.oauth` (Lattice's, with ChatGPT's callback, scopes `ideamachine:read`/`ideamachine:write`, its own
+   signing context, one resource), `web.PublicHandler` on 8791 when `IM_PUBLIC_URL` is set, the `tunnel` service and
+   ChatGPT's ranges in `install/`, `tests/test_public_mcp.py`; setup in deploy.md.
 3. Lens storage and events, kinds `all` and `none`, pins, filters, `pub.lens_members`, `/lens/<id>`, `open_lens`;
    boards stored, the Tree and the Grid reading them.
 4. The `jev` kind and `im lens run`.
