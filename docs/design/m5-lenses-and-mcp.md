@@ -201,6 +201,10 @@ I'd ask of the map). Their names, descriptions and Jev questions are personal, s
 private, and reach `im` as data (`im lens import FILE`, 0013); nothing in this repo names them. ROADMAP-v2 asks for
 5 judged useful, so M5 is done when 5 of the 6 pass.
 
+**Tried first,** before the sheets: a pilot (`im audit-lens`, with its own pre-registration) has Jev answer every
+lens's wordings about every card, from a `lenses.json` kept in saved/, and reports what each lens lets in and the
+cards near its cut, to reword from. Nothing it writes is a lens.
+
 Judged twice, both bars registered in im-evals before any run, and my use kept apart from both:
 
 - **Correct.** For each lens, a blind sheet: 20 members drawn at random, and 20 near non-members (the clusters

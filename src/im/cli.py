@@ -413,6 +413,23 @@ def cmd_audit_eligibility(args) -> None:
         _print(eligibility_audit.write(conn, folder, eligibility_audit.live_read(cfg.extract), args.seed, args.size))
 
 
+def cmd_audit_lens(args) -> None:
+    """The lens pilot: Jev answers each lens's wordings (lenses.json in the folder) about every card; then what they
+    let in, and the cards near each cut."""
+    from pathlib import Path
+
+    from im import jev, lens_audit
+
+    folder = Path(args.folder)
+    with db.connect(db.pipeline_dsn()) as conn:
+        if args.action == "report":
+            _print(lens_audit.report(conn, folder))
+            return
+        cap = config.load().extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
+        _print(lens_audit.draft(conn, jev.Jev(), folder, args.limit, cap))
+
+
+
 def cmd_audit_probe(args) -> None:
     """Analogy or tension: a blind sheet asking one question of pairs proposed several ways, then my marks tallied."""
     from pathlib import Path
@@ -857,6 +874,16 @@ def main(argv=None) -> None:
     ael.add_argument("--monthly-cap-usd", type=float, help="draft: send nothing once the month's spend reaches this "
                      "(default: config)")
     ael.set_defaults(func=cmd_audit_eligibility)
+    alp = sub.add_parser("audit-lens", help="the lens pilot: Jev answers lens wordings (lenses.json in the folder, "
+                         "never in the repo) about every card; report says what each lets in (draft sends to Jev)")
+    alp.add_argument("action", choices=["draft", "report"],
+                     help="draft: ask Jev about every card not answered yet; report: per lens, what passes its cut, "
+                          "and near-cut.md (sends nothing)")
+    alp.add_argument("folder", help="where lenses.json is and the draft goes (it quotes me: keep it in saved/)")
+    alp.add_argument("--limit", type=int, help="draft: ask at most this many cards (a smoke run)")
+    alp.add_argument("--monthly-cap-usd", type=float, help="draft: send nothing once the month's spend reaches this "
+                     "(default: config)")
+    alp.set_defaults(func=cmd_audit_lens)
     for name, question, what in (
             ("audit-analogies", "analogy", "a blind sheet of possible analogies between unrelated ideas, ranked by "
                                            "Jev beside random pairs (sends to Jev; --only facets to Claude); score "

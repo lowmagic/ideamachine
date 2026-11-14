@@ -37,6 +37,8 @@ uv run im audit-edges review saved/b4-1 saved/b4-2   # B4: pairs where a chat mo
 uv run im audit-eligibility sheet saved/eligibility-1   # capture eligibility (docs/design/eligibility-audit.md): 100 live captures at random, with their lines, under the frozen rubric; sends nothing (the archive's captures are left out and counted)
 uv run im audit-eligibility draft saved/eligibility-1 --model openai/gpt-6.1-terra   # a model labels every item eligible, ineligible or uncertain, blind to other drafts; then --model google/gemini-4-carbon; no Anthropic model (Opus wrote the captures)
 uv run im audit-eligibility review saved/eligibility-1   # review.md: the items the drafts split on and 20 they agree on, shuffled, no labels; mark them, run again to read the marks back; then `score` (model agreement, my validation, the ineligible rate)
+uv run im audit-lens draft saved/lens-pilot-1 --limit 20   # the lens pilot (M5 design): Jev answers the wordings in the folder's lenses.json (kept in saved/, never in the repo) about 20 cards, one request each; without --limit, every card not answered yet
+uv run im audit-lens report saved/lens-pilot-1   # per lens: cards asked, how many pass its cut, the spread, how its wordings agree, the members lenses share; near-cut.md, the cards either side of each cut, to reword from; sends nothing
 uv run im bench-match run saved/b1-1 --limit 20   # B1: Opus's logged match decisions, replayed through Jev; `score` compares
 uv run im audit-tension draft saved/tension-2 --model jev-1.14.0   # Jev drafts a probe sheet (via OpenRouter); --probes asks more
                                   # (OpenRouter models need OPENROUTER_API_KEY)
