@@ -7,7 +7,7 @@ import pytest
 
 from im import egress, jev, lens_audit
 
-from helpers import table
+from helpers import HashEmbedder, table
 from test_review import as_web_role
 
 LENSES = {"lenses": [
@@ -96,3 +96,35 @@ def test_wordings_that_cant_be_asked_are_refused(tmp_path):
     (tmp_path / "lenses.json").write_text(json.dumps(bad))
     with pytest.raises(SystemExit, match="rule must be one of"):
         lens_audit.load(tmp_path)
+
+
+def test_the_sheet_is_blind_and_my_marks_score_each_stratum(seeded_lattice, folder):
+    pipe = seeded_lattice
+    lens_audit.draft(pipe, fake_jev("garden")[0], folder)
+    out = lens_audit.sheet(pipe, HashEmbedder(), folder, ["coffee"])
+    key = json.loads((folder / "sheet-key.json").read_text())["lenses"]["coffee"]
+    items = key["items"]
+    by = {s: [n for n, it in items.items() if it["stratum"] == s] for s in ("member", "baseline_only", "near")}
+    assert len(by["member"]) == min(lens_audit.SHEET_N, key["members"]) > 0
+    assert len(by["baseline_only"]) == min(lens_audit.SHEET_N, key["baseline_only"])
+    assert len({it["idea_id"] for it in items.values()}) == len(items) == out["coffee"]["drawn"]   # no card twice
+    text = (folder / "sheet.md").read_text()
+    assert "# Coffee" in text and text.count("mark: ") == len(items)
+    assert not any(word in text for word in ("member", "baseline", "near", "0.9", "0.85"))   # nothing says which
+    with pytest.raises(SystemExit, match="already has a sheet"):
+        lens_audit.sheet(pipe, HashEmbedder(), folder, ["coffee"])
+
+    # I mark every member in, the baseline's own out, the near misses in except one I can't read.
+    want = {n: "in" for n in by["member"] + by["near"]} | {n: "out" for n in by["baseline_only"]}
+    if by["near"]:
+        want[by["near"][0]] = "maybe"
+    for n, m in want.items():
+        head, tail = text.split(f"## {n}\n", 1)
+        text = head + f"## {n}\n" + tail.replace("mark: ", f"mark: {m}", 1)
+    (folder / "sheet.md").write_text(text)
+    s = lens_audit.score(folder)
+    got = s["lenses"]["coffee"]
+    assert got["precision"]["in"] == got["precision"]["of"] == len(by["member"]) and got["precision"]["share"] == 1.0
+    assert got["disagree"]["baseline_only"]["share"] == (0.0 if by["baseline_only"] else None)
+    assert got["near_misses_in"]["of"] == max(len(by["near"]) - 1, 0)
+    assert s["unmarked"] == [] and s["unreadable"] == ({by["near"][0]: "maybe"} if by["near"] else {})

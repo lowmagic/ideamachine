@@ -39,6 +39,8 @@ uv run im audit-eligibility draft saved/eligibility-1 --model openai/gpt-6.1-ter
 uv run im audit-eligibility review saved/eligibility-1   # review.md: the items the drafts split on and 20 they agree on, shuffled, no labels; mark them, run again to read the marks back; then `score` (model agreement, my validation, the ineligible rate)
 uv run im audit-lens draft saved/lens-pilot-1 --limit 20   # the lens pilot (M5 design): Jev answers the wordings in the folder's lenses.json (kept in saved/, never in the repo) about 20 cards, one request each; without --limit, every card not answered yet
 uv run im audit-lens report saved/lens-pilot-1   # per lens: cards asked, how many pass its cut, the spread, how its wordings agree, the members lenses share; near-cut.md, the cards either side of each cut, to reword from; sends nothing
+uv run im audit-lens sheet saved/lens-pilot-1 --lenses a,b   # the blind sheet judging those lenses (M5 design): per lens 10 members, 10 cards only the embedding baseline has, 10 near misses, shuffled, unlabeled; mark each in, out or ?; sends nothing
+uv run im audit-lens score saved/lens-pilot-1   # once marked: per lens, precision among members (Wilson 95%), the baseline's weighted precision, the two where they disagree, near misses put in
 uv run im bench-match run saved/b1-1 --limit 20   # B1: Opus's logged match decisions, replayed through Jev; `score` compares
 uv run im audit-tension draft saved/tension-2 --model jev-1.14.0   # Jev drafts a probe sheet (via OpenRouter); --probes asks more
                                   # (OpenRouter models need OPENROUTER_API_KEY)

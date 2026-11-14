@@ -415,19 +415,28 @@ def cmd_audit_eligibility(args) -> None:
 
 def cmd_audit_lens(args) -> None:
     """The lens pilot: Jev answers each lens's wordings (lenses.json in the folder) about every card; then what they
-    let in, and the cards near each cut."""
+    let in, and the cards near each cut; then the blind sheet that judges them, and my marks scored."""
     from pathlib import Path
 
-    from im import jev, lens_audit
+    from im import jev, lattice, lens_audit
 
     folder = Path(args.folder)
+    if args.action == "score":
+        _print(lens_audit.score(folder))
+        return
+    cfg = config.load()
     with db.connect(db.pipeline_dsn()) as conn:
         if args.action == "report":
             _print(lens_audit.report(conn, folder))
             return
-        cap = config.load().extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
+        if args.action == "sheet":
+            if not args.lenses:
+                raise SystemExit("sheet needs --lenses, the ids of the lenses it judges, e.g. --lenses a,b")
+            _print(lens_audit.sheet(conn, lattice.SentenceEmbedder(cfg.lattice.embedding_model), folder,
+                                    args.lenses.split(",")))
+            return
+        cap = cfg.extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
         _print(lens_audit.draft(conn, jev.Jev(), folder, args.limit, cap))
-
 
 
 def cmd_audit_probe(args) -> None:
@@ -876,11 +885,13 @@ def main(argv=None) -> None:
     ael.set_defaults(func=cmd_audit_eligibility)
     alp = sub.add_parser("audit-lens", help="the lens pilot: Jev answers lens wordings (lenses.json in the folder, "
                          "never in the repo) about every card; report says what each lets in (draft sends to Jev)")
-    alp.add_argument("action", choices=["draft", "report"],
+    alp.add_argument("action", choices=["draft", "report", "sheet", "score"],
                      help="draft: ask Jev about every card not answered yet; report: per lens, what passes its cut, "
-                          "and near-cut.md (sends nothing)")
+                          "and near-cut.md; sheet: the blind sheet for --lenses; score: my marks on it (only draft "
+                          "sends)")
     alp.add_argument("folder", help="where lenses.json is and the draft goes (it quotes me: keep it in saved/)")
     alp.add_argument("--limit", type=int, help="draft: ask at most this many cards (a smoke run)")
+    alp.add_argument("--lenses", help="sheet: the ids of the lenses it judges, comma-separated")
     alp.add_argument("--monthly-cap-usd", type=float, help="draft: send nothing once the month's spend reaches this "
                      "(default: config)")
     alp.set_defaults(func=cmd_audit_lens)

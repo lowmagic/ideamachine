@@ -205,19 +205,28 @@ private, and reach `im` as data (`im lens import FILE`, 0013); nothing in this r
 lens's wordings about every card, from a `lenses.json` kept in saved/, and reports what each lens lets in and the
 cards near its cut, to reword from. Nothing it writes is a lens.
 
-Judged twice, both bars registered in im-evals before any run, and my use kept apart from both:
+Judged twice, both bars registered in im-evals before any run, and my use kept apart from both. One blind sheet per
+lens (`im audit-lens sheet`), 30 cards drawn by seed and shuffled, nothing saying which is which, each marked in, out
+or can't tell (decided 2026-11-14: 10 a stratum to start, 150 marks for five lenses):
 
-- **Correct.** For each lens, a blind sheet: 20 members drawn at random, and 20 near non-members (the clusters
-  nearest its description by embedding that the lens left out), shuffled, nothing saying which is which. I mark each
-  in or out. Precision among members, and how many near non-members I put in; rates across the archive are weighted
-  by each stratum's size, since neither half is a uniform draw.
-- **Better than embedding alone.** The baseline is the clusters nearest the lens's description by embedding, as
-  many as the lens has members. The lens has to beat it on my marks, or the query isn't earning its cost and the
-  cheaper kind does. The sheet adds 20 of the baseline's members the lens left out.
+- 10 of its **members**;
+- 10 of the **baseline's own**: the baseline is the cards nearest the lens's description by embedding, as many as
+  the lens has members, and these are the ones it has that the lens left out;
+- 10 **near misses**: from the 50 highest-scoring cards the lens left out, other than the baseline's. (The design
+  first drew near non-members by embedding, which is what the baseline's own already are.)
+
+The bars:
+
+- **Correct.** Precision among the members, with its Wilson interval; at 10 marks the interval is wide, which the
+  pre-registration says.
+- **Better than embedding alone.** The baseline's precision, weighted by its two parts (the members it shares with
+  the lens, estimated from the members drawn that it has, and its own, from its stratum), against the lens's. Also
+  the two where they disagree: the lens's members the baseline lacks against the baseline's own. If the lens
+  doesn't beat the baseline, the query isn't earning its cost, and the cheaper kind does.
+- **Near misses** I put in are reported beside the bars, as what the cut leaves out near it.
 - **Used.** Whether I open each lens again over the next two weeks, recorded as an observation beside the bars,
   unblinded, never mixed into them.
 
 ## Still open
 
-- Each lens's description and Jev questions: drafted in im-evals, for me to edit, before the sheets.
-- The bars' numbers, in the pre-registration (a starting point: precision ≥ 0.8, and above the baseline's).
+- The bars' numbers, in their pre-registration (a starting point: precision ≥ 0.8, and above the baseline's).
