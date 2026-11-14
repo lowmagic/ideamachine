@@ -20,6 +20,15 @@ only cards I said (`pub.cards.by_me`).
 2. `report`: sends nothing. Per lens: the cards asked, how many pass the cut, the spread of its probability, how
    closely its deciding wordings rank cards alike, each probe beside it, and the members it shares with each other
    lens; and near-cut.md, the cards just either side of each cut, for me to read and reword. It quotes me: saved/.
+3. `sheet`: sends nothing. The blind sheet that judges the lenses named (M5 design, "The canonical lenses"), from
+   the draft's answers: for each, SHEET_N of its members, SHEET_N of the embedding baseline's members it left out
+   (the baseline: the cards nearest its description by embedding, as many as it has members), and SHEET_N of the
+   NEAR_POOL highest-scoring cards it left out other than the baseline's, drawn by seed, shuffled together under the
+   lens's name and description, nothing saying which is which. I mark each in, out or ?. Which is which is in
+   sheet-key.json.
+4. `score`: from my marks, per lens: precision among its members (Wilson 95%), the baseline's precision weighted by
+   its two parts (members it shares with the lens, and those it alone has), the two compared where they disagree,
+   and how many near misses I put in. N with each.
 """
 
 import hashlib
@@ -28,11 +37,18 @@ import random
 import re
 from pathlib import Path
 
+import numpy as np
+
 from im import egress, jev, llm, sensitivity
+from im.eligibility_audit import wilson
 
 SEED = 14
 NEAR = 10       # cards each side of a cut on near-cut.md
 TOP = 10        # a lens's highest cards on near-cut.md
+SHEET_N = 10    # cards per stratum on a lens's sheet
+NEAR_POOL = 50  # the highest-scoring cards a lens left out, that its near misses are drawn from
+SHEET_SEED = 15
+MARKS = {"in": "in", "i": "in", "out": "out", "o": "out", "?": "unsure", "u": "unsure"}
 RULES = ("max", "mean")
 _ID = re.compile(r"^[a-z][a-z0-9]{0,15}$")
 _NOUL = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
@@ -230,4 +246,128 @@ def report(conn, folder: Path) -> dict:
                              for n, a in enumerate(members) for b in list(members)[n + 1:]}
     (folder / "near-cut.md").write_text("\n".join(["# Lens pilot: near the cut", ""] + lines))
     (folder / "report.json").write_text(json.dumps(out, indent=1))
+    return out
+
+
+SHEET_HEADER = """# Lenses: the sheet
+
+For each card: does it belong in this lens, as its description says? Write `in`, `out` or `?` (can't tell) after
+`mark:`. Nothing says why a card is here; judge each on its own.
+"""
+
+
+def baseline(conn, embedder, description: str, ids: list[str], size: int) -> tuple[list[str], dict[str, float]]:
+    """The `size` cards among `ids` nearest the description by embedding, nearest first, and every card's
+    similarity. Cards with no embedding under the embedder's model are left out."""
+    vecs = {i: np.array(json.loads(v)) for i, v in conn.execute(
+        """SELECT idea_id::text, embedding::text FROM im.idea_embeddings
+           WHERE model_version = %s AND idea_id::text = ANY(%s)""", (embedder.model_version, ids))}
+    d = embedder.embed([description])[0]
+    sim = {i: float(v @ d) for i, v in vecs.items()}
+    return sorted(sim, key=lambda i: (-sim[i], i))[:size], sim
+
+
+def _shown(item: dict) -> str:
+    lines = [f"**{item['title']}**", "", item["statement"]]
+    if item.get("my_note"):
+        lines += ["", f"My note: {item['my_note']}"]
+    lines += [""] + [f"> {q}" for q in item.get("said", [])]
+    return "\n".join(lines).rstrip()
+
+
+def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_SEED) -> dict:
+    """Write sheet.md and sheet-key.json for the lenses named, from the draft's answers. Only cards whose text is
+    still what Jev was shown are drawn. Never written over: marks would no longer match."""
+    spec = load(folder)
+    path, kpath = folder / "sheet.md", folder / "sheet-key.json"
+    if path.exists() or kpath.exists():
+        raise SystemExit(f"{folder} already has a sheet; mark it and score it, or draw one in another folder")
+    lenses = {lens["id"]: lens for lens in spec["lenses"]}
+    if unknown := [i for i in lens_ids if i not in lenses]:
+        raise SystemExit(f"no lens {', '.join(unknown)} in {folder / 'lenses.json'}")
+    got = json.loads((folder / "draft.json").read_text())
+    now = {c["id"]: c for c in cards(conn)}
+    live = {i: a["p"] for i, a in got["cards"].items() if i in now and now[i]["sha"] == a["sha"]}
+    rng = random.Random(seed)
+    lines, key = [SHEET_HEADER], {"seed": seed, "version": got["version"], "lenses": {}}
+    for lid in lens_ids:
+        lens = lenses[lid]
+        p = {i: x for i, a in live.items() if (x := _p(lens, a)) is not None}
+        members = sorted(i for i, x in p.items() if x >= lens["cut"])
+        base, sim = baseline(conn, embedder, lens["description"], sorted(p), len(members))
+        only = sorted(set(base) - set(members))
+        # The near misses: the highest-scoring cards the lens left out, other than the baseline's own, so the three
+        # strata don't overlap.
+        pool = sorted((i for i in p if i not in members and i not in only), key=lambda i: (-p[i], i))[:NEAR_POOL]
+        drawn = [(i, "member") for i in rng.sample(members, min(SHEET_N, len(members)))]
+        drawn += [(i, "baseline_only") for i in rng.sample(only, min(SHEET_N, len(only)))]
+        drawn += [(i, "near") for i in rng.sample(pool, min(SHEET_N, len(pool)))]
+        rng.shuffle(drawn)
+        items = {}
+        lines += [f"# {lens['name']}", "", lens["description"], ""]
+        for n, (i, stratum) in enumerate(drawn, 1):
+            num = f"{lid}-{n}"
+            items[num] = {"idea_id": i, "stratum": stratum, "p": round(p[i], 4),
+                          "similarity": round(sim.get(i, 0.0), 4), "in_baseline": i in base}
+            lines += [f"## {num}", "", _shown(now[i]["item"]), "", "mark: ", ""]
+        key["lenses"][lid] = {"name": lens["name"], "cut": lens["cut"], "asked": len(p), "members": len(members),
+                              "baseline": len(base), "overlap": len(set(base) & set(members)),
+                              "baseline_only": len(only), "near_pool": len(pool), "items": items}
+    path.write_text("\n".join(lines))
+    kpath.write_text(json.dumps(key, indent=1))
+    return {"sheet": str(path), **{lid: {k: v for k, v in s.items() if k != "items"} | {"drawn": len(s["items"])}
+                                   for lid, s in key["lenses"].items()}}
+
+
+def marks(text: str) -> dict[str, str]:
+    """Item -> `in`, `out` or `unsure` from sheet.md; a mark that isn't one is kept as `?<what was written>`, so a
+    typo doesn't pass for a blank. Unmarked items are left out."""
+    out = {}
+    for num, body in re.findall(r"^## (\S+)\n(.*?)(?=^#{1,2} |\Z)", text, re.M | re.S):
+        m = re.search(r"^mark:[ \t]*(\S*)[ \t]*$", body, re.M)
+        if m and m.group(1):
+            word = m.group(1).strip("`").lower()
+            out[num] = MARKS.get(word, f"?{m.group(1)}")
+    return out
+
+
+def _rate(xs: list[str]) -> dict:
+    k, n = xs.count("in"), xs.count("in") + xs.count("out")
+    return {"in": k, "of": n, "share": round(k / n, 3) if n else None, "wilson95": wilson(k, n),
+            "unsure": xs.count("unsure")}
+
+
+def _within(marks_: dict, drawn: dict, stratum: str, in_baseline: bool | None = None) -> list[str]:
+    """My marks on the items drawn in a stratum, those the baseline has or lacks if `in_baseline` says which."""
+    return [m for n, m in marks_.items() if drawn[n]["stratum"] == stratum
+            and (in_baseline is None or drawn[n]["in_baseline"] == in_baseline)]
+
+
+def score(folder: Path) -> dict:
+    """Per lens, from my marks: precision among its members; the baseline's precision, its shared part estimated
+    from the members drawn that the baseline also has (the lens's own precision when none was drawn, and said so)
+    and its own part from the baseline-only cards; the two where they disagree (members the baseline lacks against
+    cards only the baseline has); and the near misses I put in. Unmarked and unreadable items are listed."""
+    key = json.loads((folder / "sheet-key.json").read_text())
+    mine = marks((folder / "sheet.md").read_text())
+    out = {"unmarked": [], "unreadable": {}, "lenses": {}}
+    for lid, s in key["lenses"].items():
+        got = {n: mine.get(n) for n in s["items"]}
+        out["unmarked"] += [n for n, m in got.items() if m is None]
+        out["unreadable"] |= {n: m[1:] for n, m in got.items() if m and m.startswith("?")}
+        ok = {n: m for n, m in got.items() if m in ("in", "out", "unsure")}
+        drawn = s["items"]
+        members = _rate(_within(ok, drawn, "member"))
+        shared = _rate(_within(ok, drawn, "member", True))
+        lens_only = _rate(_within(ok, drawn, "member", False))
+        base_only = _rate(_within(ok, drawn, "baseline_only"))
+        near = _rate(_within(ok, drawn, "near"))
+        shared_p = shared["share"] if shared["share"] is not None else members["share"]
+        base_p = (None if shared_p is None or base_only["share"] is None or not s["baseline"]
+                  else round((s["overlap"] * shared_p + s["baseline_only"] * base_only["share"]) / s["baseline"], 3))
+        out["lenses"][lid] = {"name": s["name"], "members": s["members"], "asked": s["asked"],
+                              "precision": members, "baseline_precision": base_p,
+                              "baseline_shared_from_lens": shared["share"] is None,
+                              "disagree": {"lens_only": lens_only, "baseline_only": base_only},
+                              "near_misses_in": near}
     return out
