@@ -79,6 +79,11 @@ Settings are env vars:
   in with its token, and listens on 127.0.0.1:8792. Demo mode, where nothing sensitive shows on any page or in any MCP
   answer and nothing can be kept or dismissed, is the app's one setting: `/demo` turns it on for every device and off
   only with the token, `im demo on|off` does the same from the shell, and `im web --demo` forces it on.
+- `IM_PUBLIC_URL` (optional): `https://<host>`, no path. With it, `im web` also opens the public MCP listener on
+  `--mcp-port` (8791): `/mcp` behind OAuth (`im.oauth`), for claude.ai and ChatGPT through a Cloudflare tunnel
+  ([deploy.md](deploy.md#the-public-mcp-listener-claudeai-chatgpt)). `IM_MCP_ALLOW` (comma-separated networks;
+  default Anthropic's `160.79.104.0/21`) and `IM_MCP_ALLOW_FILE` (one network a line: ChatGPT's ranges) say which
+  callers, by the address Cloudflare reports, reach anything but the sign-in page.
 - `IM_DEV_ADMIN_URL`: the local dev superuser, used only by tests to create and drop `im_test`. Code refuses it
   unless every host it (or `PGHOST`) names is localhost, a loopback address or a socket directory. Each test gets a
   fresh `im_test` database and stream directory, and none of the other settings here.

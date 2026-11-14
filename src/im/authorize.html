@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Idea Machine</title>
+<style>
+  :root { color-scheme: light; --surface-1: #fcfcfb; --surface-2: #f2f1ed; --border: #dedcd5;
+          --text-primary: #0b0b0b; --text-secondary: #52514e; }
+  @media (prefers-color-scheme: dark) { :root { color-scheme: dark; --surface-1: #1a1a19; --surface-2: #242422;
+          --border: #3a3936; --text-primary: #ffffff; --text-secondary: #c3c2b7; } }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: var(--surface-1);
+         color: var(--text-primary); font: 16px/1.45 system-ui, sans-serif; padding: 16px; box-sizing: border-box; }
+  form { width: min(380px, 100%); display: grid; gap: 12px; }
+  h1 { margin: 0; font-size: 20px; }
+  p { color: var(--text-secondary); margin: 0; }
+  .msg:empty { display: none; }
+  .msg { color: var(--text-primary); }
+  input[type=password], button { font: inherit; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border);
+                  background: var(--surface-2); color: var(--text-primary); }
+  label { display: flex; gap: 8px; align-items: flex-start; color: var(--text-secondary); }
+  label input { margin-top: 4px; }
+  b { color: var(--text-primary); }
+</style>
+</head>
+<body>
+<form method="post" action="/authorize">
+  <h1>Connect Idea Machine to /*CLIENT*/</h1>
+  <p>After you sign in, you'll go back to <b>/*HOST*/</b>, and it can search your ideas and read them, with their
+     quotes (other people's names replaced by S1, S2…). In demo mode it sees only what demo mode shows.</p>
+  <p class="msg">/*MESSAGE*/</p>
+  <input type="hidden" name="request" value="/*REQUEST*/">
+  <input name="token" type="password" placeholder="Idea Machine token" autocomplete="current-password" autofocus required>
+  <label><input type="checkbox" name="writes" checked> Also let it star, keep or dismiss ideas, link them, set notes,
+    add ideas and shape themes when you ask</label>
+  <button type="submit">Allow</button>
+</form>
+</body>
+</html>
