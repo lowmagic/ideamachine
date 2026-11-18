@@ -434,7 +434,8 @@ def cmd_audit_lens(args) -> None:
                 raise SystemExit("sheet needs --lenses, the ids of the lenses it judges, e.g. --lenses a,b")
             _print(lens_audit.sheet(conn, lattice.SentenceEmbedder(cfg.lattice.embedding_model), folder,
                                     args.lenses.split(","), half_=args.half,
-                                    exclude=lens_audit.shown_on([Path(f) for f in args.exclude])))
+                                    exclude=lens_audit.shown_on([Path(f) for f in args.exclude]),
+                                    members=args.members))
             return
         cap = cfg.extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
         if args.action == "review":
@@ -914,6 +915,8 @@ def main(argv=None) -> None:
     alp.add_argument("--half", choices=["dev", "held"],
                      help="sheet: draw only from this half of the cards (held, for the sheet that judges)")
     alp.add_argument("--exclude", nargs="*", default=[], help="sheet: leave out cards these earlier sheets showed")
+    alp.add_argument("--members", type=int, default=10,
+                     help="sheet: how many of each lens's members it draws (default 10; the other strata draw 10 each)")
     alp.add_argument("--model", default="claude-opus-5-5", help="review: the model standing in for me")
     alp.add_argument("--effort", default="low", help="review: its effort")
     alp.add_argument("--monthly-cap-usd", type=float, help="draft, review: send nothing once the month's spend "
