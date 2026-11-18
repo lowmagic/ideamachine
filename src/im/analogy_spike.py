@@ -62,7 +62,7 @@ def _rank(M: np.ndarray, i: int, j: int) -> int:
 
 
 def run(conn, client, embedder, folder: Path, others: int = 300, seed: int = 7, monthly_cap_usd: float = 20.0) -> dict:
-    from im import themes
+    from im import llm
 
     pairs = analogy_pairs(folder)
     if not pairs:
@@ -76,7 +76,7 @@ def run(conn, client, embedder, folder: Path, others: int = 300, seed: int = 7, 
 
     path = folder / "structures.json"
     structures = json.loads(path.read_text()) if path.exists() else {}
-    pv = themes.version(STRUCTURE_SYSTEM, STRUCTURE_SCHEMA, MODEL, EFFORT)
+    pv = llm.version(STRUCTURE_SYSTEM, STRUCTURE_SCHEMA, MODEL, EFFORT)
     todo = [i for i in ids if i not in structures]
     cost = 0.0
     for start in range(0, len(todo), BATCH):

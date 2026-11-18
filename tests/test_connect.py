@@ -7,7 +7,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from im import config, connect, edge_audit, jev, lattice, llm, themes
+from im import config, connect, edge_audit, jev, lattice, llm
 from im.config import Config, ConnectConfig
 
 from helpers import HashEmbedder, assert_invariants, run, table
@@ -85,7 +85,7 @@ def every_pair(conn) -> int:
 
 def test_b4s_prompt_is_the_judges_and_its_version_is_unchanged():
     # Terra passed B4 under this version; edge_audit's drafts and the judge send the same prompt.
-    assert themes.version(connect.SYSTEM, connect.SCHEMA, TERRA, "low") == "1f2767ae110b" == connect.prompt_version()
+    assert llm.version(connect.SYSTEM, connect.SCHEMA, TERRA, "low") == "1f2767ae110b" == connect.prompt_version()
     assert not hasattr(edge_audit, "DRAFT_SYSTEM")
 
 

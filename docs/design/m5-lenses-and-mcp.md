@@ -199,8 +199,51 @@ One PR each, in order:
    ChatGPT's ranges in `install/`, `tests/test_public_mcp.py`; setup in deploy.md.
 3. Lens storage and events, kinds `all` and `none`, pins, filters, `pub.lens_members`, `/lens/<id>`, `open_lens`;
    boards stored, the Tree and the Grid reading them.
+   **Built:** migration 069 (`im.lenses`, `im.lens_pins`, `im.boards` with the Tree and the Grid, `im.board_lenses`;
+   `pub.lenses`, `pub.lens_members`, `pub.demo_lens_members`, `pub.lens_pins`, `pub.boards`, `pub.board_lenses`),
+   `lens.py`'s stored lenses, `/lenses`, `/lens/<id>`, `/board/tree`, `/board/grid`, `/sky?lens=`, a card's lenses,
+   `open_lens` (demo too), `im lens list | show`, `tests/test_lenses.py`. Settled while building:
+   - **Events:** `lens_add` (the sender makes the id, as `split_theme` does), `lens_edit`, `lens_state` (`active`,
+     `pinned`, `archived`: one kind, my latest wins), `lens_pin` (a card in or out) and `lens_unpin`, `board_place`
+     and `board_remove`. A lens is named in the payload, not a column: lenses are never deleted. Shapes are CHECKs;
+     what no longer applies (a name taken, no such lens or place) is recorded in `im.feedback_applied`, not refused.
+   - **A pin's anchor:** the segments the cluster was made from; else what I typed (`idea_add:<event id>`); else one
+     speech capture's segments; else its archive capture's observation. It resolves through re-transcriptions to
+     the clusters made from that speech or citing it now, and through merges to the cluster kept.
+   - **Filters:** maturity and kept-as as lists, said by me and sensitive as yes or no, said since and until as days.
+   - **Places:** the Tree's by sephira and path letter (`kether`, `aleph`), the Grid's as numbered cells, shown in
+     their order before the stand-in neighborhoods.
+   - Members are cards (`pub.cards`); `all` and `none` judge every card, so their judged share is all of them.
 4. The `jev` kind and `im lens run`.
+   **Built:** migration 070 (`jev` queries in `im.lens_query_ok`, `im.lens_answers`, `pub.lens_members` with a `jev`
+   lens's cards at its cut, `pub.lens_judged`), `lens_run.py`, `im lens run | import`, the `lenses` stage of `im run`
+   and the re-read gate's `lenses`, `tests/test_lens_run.py`. Settled while building:
+   - **A `jev` query** is the shape lens_audit's pilots measured (deciding Nouls, `max` or `mean`, a cut), and Jev
+     sees each card as they showed it (`lens_run.cards`: title, statement, my note, first quotes), so a lens judged
+     there is imported as it was measured. `im lens import` takes that `lenses.json`: by name, `said_by_me` as a
+     filter, probes left behind.
+   - **What's asked:** the cards the filters admit, one request per lens and card, kept by query version and text.
+     `im lens run` stops at the 300 nearest the description (`lens_run.NEAREST`) unless `--all`; `im run` goes on
+     through the rest, 500 a lens (`lens_run.PER_RUN`), so a lens keeps up with new and changed cards.
+   - **The gate:** my edit of a query asks everything again; another Jev model with the same query and text is held
+     until `im reread lenses`, its answers standing.
+   - A `jev` lens is made by import, not in the web view, whose form keeps its questions when I edit the rest.
 5. Themes become lenses.
+   **Built:** migration 071 (theme events applied to lenses, `im.lens_sensitivity`, `pub.themes` and
+   `pub.ideas.themes` over the lenses, the theme tables dropped), `themes.py` and `im themes` gone with the `[themes]`
+   config, the sensitivity stage tagging lenses, `tests/test_themes.py` rewritten over lenses. Settled while
+   building:
+   - **Listed as themes:** every lens not archived. An archived lens is one I set aside or merged away, so it isn't
+     a theme any more, and isn't tagged for demo mode.
+   - **The events:** `pin_theme` and `unpin_theme` set the lens's state (`pinned`, `active`); `rename_theme` renames
+     it; `merge_theme` copies its pins into the other lens (that lens's own pin wins) and archives it; `split_theme`
+     makes a pinned `none` lens under the sender's id, with the ideas given pinned in there and out of the source;
+     `file_idea` and `unfile_idea` pin the idea in or out. `reject_theme` applies to nothing, since nothing proposes
+     themes, and `whats_new` lists no proposed themes.
+   - **A theme migrated** (none live, but any there would be) is a `none` lens under its id, kept at hand if it was
+     pinned, its members pinned in. It has no questions, so it can't be a `jev` lens until I import one.
+   - **A pin's last anchor** is the cluster's own id (`idea:<id>`), for a cluster with no speech, nothing typed and
+     no archive capture: one inserted by hand, as the test fixtures' are. A merge follows it; a rebuild doesn't.
 6. The canonical lenses, judged under bars registered in im-evals first.
 
 ## The canonical lenses

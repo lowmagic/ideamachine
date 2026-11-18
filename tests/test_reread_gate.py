@@ -7,7 +7,7 @@ from dataclasses import replace
 import anthropic
 import pytest
 
-from im import connect, extract, fixtures, jev, lattice, llm, observations, sensitivity, themes
+from im import connect, extract, fixtures, jev, lattice, llm, observations, sensitivity
 from im.checks import run_checks
 from im.config import ModelConfig
 
@@ -20,7 +20,6 @@ from test_merge_screen import screened  # noqa: F401  # a fixture, used by name
 from test_pipeline import CORRECTIONS
 from test_review import as_web_role
 from test_sensitivity import tagger
-from test_themes import FakeThemer, lat  # noqa: F401  # lat: a fixture, used by name
 
 READ = (1000 * 4 + 200 * 20) / 1e6       # one FakeClaude read, at Opus's price
 SONNET = '[extract]\nmodel = "claude-sonnet-5-5"\n'
@@ -181,7 +180,7 @@ def test_a_new_sensitivity_cut_holds_the_tags_until_i_approve_it(seeded_lattice,
     held = im("pending")["held"]["sensitivity"]
     assert held["estimated_usd"] == pytest.approx((n - 1) * jev_request(pipe)) and len(sent) == n + 1
     old = """SELECT (SELECT count(*) FROM im.idea_sensitivity WHERE tagger_version <> %s)
-                  + (SELECT count(*) FROM im.theme_sensitivity WHERE tagger_version <> %s)"""
+                  + (SELECT count(*) FROM im.lens_sensitivity WHERE tagger_version <> %s)"""
     tv = sensitivity.tagger_version(client)
     assert table(pipe, old, tv, tv) == [(n - 1,)]   # their tags stand
     monkeypatch.setattr(jev, "Jev", lambda: client)
@@ -207,20 +206,3 @@ def test_a_new_merge_question_holds_answered_pairs_with_their_answers(screened, 
     got = im("reread", "merges", "--limit", "2")
     assert (got["asked"], len(sent), got["held"]["held"]) == (2, 16, 4)
 
-
-def test_a_new_filer_holds_ideas_that_fit_no_theme_but_a_new_theme_files_them(lat, im, monkeypatch):  # noqa: F811
-    claude = FakeThemer()
-    themes.file_stage(lat, claude)   # one assigned, one that fits no theme
-    sonnet = ModelConfig("claude-sonnet-5-5", "low")
-    stats = themes.file_stage(lat, claude, chat=sonnet)
-    assert (stats["pending"], stats["held"]["held"], len(claude.calls)) == (0, 1, 1)
-    toml = '[themes]\nmodel = "claude-sonnet-5-5"\n'
-    held = im("pending", toml=toml)["held"]["themes"]
-    assert held["estimated_usd"] == pytest.approx((500 * 4 + 100 * 20) / 1e6 / 2) and len(claude.calls) == 1
-    monkeypatch.setattr(anthropic, "Anthropic", lambda: claude)
-    got = im("reread", "themes", toml=toml)
-    assert (got["pending"], got["none"], len(claude.calls)) == (1, 1, 2) and "held" not in got
-    assert themes.file_stage(lat, claude)["held"]["held"] == 1   # back to Opus: held again
-    lat.execute("INSERT INTO im.themes (name, origin) VALUES ('Another', 'mine')")   # its input changed
-    stats = themes.file_stage(lat, claude)
-    assert (stats["pending"], len(claude.calls)) == (1, 3) and "held" not in stats

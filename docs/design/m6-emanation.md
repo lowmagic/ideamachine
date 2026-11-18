@@ -203,10 +203,11 @@ The negative space, as a list: pairs near enough by meaning to be asked about, t
 A first Trellis view, ahead of the lenses it's for: the Tree of Life as a board of 32 lenses (the ten sephirot and
 the 22 paths, [0013](../decisions/0013-lenses-and-boards.md)), turned in three dimensions.
 
-- **A stand-in, until lenses exist.** Each lens holds one of the 32 largest graph neighborhoods
-  (`lens.neighbourhoods`), the largest on Kether. Which neighborhood is on which lens means nothing, and the page
-  says so. On the live archive (2026-11-13) that puts 294 of 1,065 cards on the tree. When lenses exist, a card's
-  lenses come from them and this stand-in goes.
+- **A lens where I put one, a stand-in elsewhere.** A sephira or path holds the lens I placed there on the Tree board
+  (`/board/tree`, M5 slice 3); one I haven't filled holds one of the 32 largest graph neighborhoods
+  (`lens.neighbourhoods`), the n-th largest at the n-th place, the largest on Kether. Which neighborhood is on which
+  place means nothing, and the page says so. On the live archive (2026-11-13) the stand-ins put 294 of 1,065 cards on
+  the tree.
 - **Three dimensions, here only.** §Direction keeps the sky in 2D because depth hides neighbors. A board I lay out by
   hand is different: its shape is the point, and the tree has one. The side pillars stand back from the middle one,
   and it turns slowly until it's touched. Drag turns it, pinch or scroll zooms; nothing is draggable.
@@ -226,13 +227,12 @@ the 22 paths, [0013](../decisions/0013-lenses-and-boards.md)), turned in three d
 
 The plainer Trellis board: a grid of lenses, one to a cell.
 
-- **A stand-in, until lenses exist**, as on the tree: each cell holds a graph neighborhood of at least 3 cards
-  (`lens.neighbourhoods`), named by the first card said in it. On the live archive (2026-11-13): 98 cells.
+- **Lenses first, then stand-ins.** The lenses I placed on the Grid board (`/board/grid`, M5 slice 3), in the order
+  of their numbered cells; then, as on the tree, each graph neighborhood of at least 3 cards (`lens.neighbourhoods`),
+  named by the first card said in it, in the order they began. On the live archive (2026-11-13): 98 neighborhoods.
 - A cell draws its cards as a small constellation: each star where the sky puts its card relative to the others in
   the cell, in the sky's color, with the connections among them. A star opens its card's crossroads.
-- **Not laid out by hand yet.** A board is lenses placed where I put them
-  ([0013](../decisions/0013-lenses-and-boards.md)); nothing stores a placement, so cells come in the order their
-  neighborhoods began. Nothing ranks them.
+- Nothing ranks the cells: a lens's cell is where I put it, and the stand-ins come in the order they began.
 - A cell links to its cards lit on the sky and on the tree. `/tree?lit=<ids>` lights those cards wherever they sit
   on the tree, until a tap on nothing.
 - Demo mode: a sensitive card is in no cell.

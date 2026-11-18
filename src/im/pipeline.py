@@ -58,6 +58,9 @@ def _purge_tombstoned(conn) -> set[str]:
     # again. The connection it wrote stays until then.
     conn.execute("""DELETE FROM im.connection_verdicts v WHERE EXISTS (
                       SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(v.segment_ids))""")
+    # A lens pin is my input, anchored to the speech it pins: forgetting that speech forgets the pin (migration 069).
+    conn.execute("""DELETE FROM im.lens_pins p WHERE EXISTS (
+                      SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(p.segment_ids))""")
     # An attention item is my request, not derived from what was said: one whose own "note to self" is forgotten goes,
     # and every other loses only the forgotten lines it marked (migration 066).
     conn.execute("""DELETE FROM im.attention_items a WHERE EXISTS (

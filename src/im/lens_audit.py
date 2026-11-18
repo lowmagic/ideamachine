@@ -41,9 +41,8 @@ import random
 import re
 from pathlib import Path
 
-import numpy as np
-
-from im import egress, jev, llm, sensitivity, themes
+from im import egress, jev, llm
+from im.lens_run import cards, nearest
 from im.eligibility_audit import wilson
 
 SEED = 14
@@ -62,17 +61,15 @@ RULES = ("max", "mean")
 _ID = re.compile(r"^[a-z][a-z0-9]{0,15}$")
 _NOUL = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
-CARDS = """
-SELECT c.idea_id::text, c.title, c.statement, coalesce(c.my_note, ''), c.by_me > 0,
-       ARRAY(SELECT left(ce.quote, 200) FROM pub.card_evidence ce WHERE ce.idea_id = c.idea_id AND ce.quote IS NOT NULL
-             ORDER BY ce.said_at, ce.item_id LIMIT %s)
-FROM pub.cards c ORDER BY c.idea_id"""
-
 
 def load(folder: Path) -> dict:
-    """lenses.json, checked: every lens with an id, a name, a description, a rule, a cut and at least one deciding
+    """The folder's lenses.json, checked (parse)."""
+    return parse(folder / "lenses.json")
+
+
+def parse(path: Path) -> dict:
+    """A lenses.json, checked: every lens with an id, a name, a description, a rule, a cut and at least one deciding
     Noul, each Noul a question and its criteria (or null). Fails closed on anything else."""
-    path = folder / "lenses.json"
     if not path.exists():
         raise SystemExit(f"{path} is missing: the wordings go there (keep them in saved/, never in the repo)")
     spec = json.loads(path.read_text())
@@ -114,17 +111,6 @@ def _nouls(lens: dict) -> dict:
     """The lens's Nouls as asked, each name prefixed by its lens, since one request asks every lens's."""
     return {f"{lens['id']}__{name}": tuple(asked) for kind in ("deciding", "probes")
             for name, asked in (lens.get(kind) or {}).items()}
-
-
-def cards(conn) -> list[dict]:
-    """Every card as Jev is shown it, with whether I said it and its text's hash."""
-    out = []
-    for idea, title, statement, note, by_me, said in conn.execute(CARDS, (sensitivity.QUOTES,)):
-        item = ({"title": title, "statement": statement} | ({"my_note": note} if note else {})
-                | ({"said": said} if said else {}))
-        out.append({"id": idea, "by_me": by_me, "item": item,
-                    "sha": hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()})
-    return out
 
 
 def _admits(lens: dict, card: dict) -> bool:
@@ -265,17 +251,6 @@ For each card: does it belong in this lens, as its description says? Write `in`,
 """
 
 
-def baseline(conn, embedder, description: str, ids: list[str], size: int) -> tuple[list[str], dict[str, float]]:
-    """The `size` cards among `ids` nearest the description by embedding, nearest first, and every card's
-    similarity. Cards with no embedding under the embedder's model are left out."""
-    vecs = {i: np.array(json.loads(v)) for i, v in conn.execute(
-        """SELECT idea_id::text, embedding::text FROM im.idea_embeddings
-           WHERE model_version = %s AND idea_id::text = ANY(%s)""", (embedder.model_version, ids))}
-    d = embedder.embed([description])[0]
-    sim = {i: float(v @ d) for i, v in vecs.items()}
-    return sorted(sim, key=lambda i: (-sim[i], i))[:size], sim
-
-
 def _shown(item: dict) -> str:
     lines = [f"**{item['title']}**", "", item["statement"]]
     if item.get("my_note"):
@@ -306,7 +281,7 @@ def _strata(conn, embedder, lens: dict, live: dict, keep) -> dict:
     the near pool (the NEAR_POOL highest-scoring cards it left out other than the baseline's, so none overlap)."""
     p = {i: x for i, a in live.items() if keep(i) and (x := _p(lens, a)) is not None}
     members = sorted(i for i, x in p.items() if x >= lens["cut"])
-    base, sim = baseline(conn, embedder, lens["description"], sorted(p), len(members))
+    base, sim = nearest(conn, embedder, lens["description"], sorted(p), len(members))
     only = sorted(set(base) - set(members))
     pool = sorted((i for i in p if i not in members and i not in only), key=lambda i: (-p[i], i))[:NEAR_POOL]
     return {"p": p, "members": members, "base": base, "sim": sim, "only": only, "pool": pool}
@@ -405,7 +380,7 @@ def review(conn, client, embedder, folder: Path, model: str, effort: str = "low"
     plans = []
     for lens in lenses:
         system = REVIEW_SYSTEM.format(name=lens["name"], description=lens["description"])
-        pv = themes.version(system, REVIEW_SCHEMA, model, effort)
+        pv = llm.version(system, REVIEW_SCHEMA, model, effort)
         labels = store["prompts"].setdefault(pv, {"lens": lens["id"], "description": lens["description"],
                                                   "labels": {}})["labels"]
         plans.append((lens, system, pv, labels, _strata(conn, embedder, lens, live, lambda i: half(i) == "dev")))

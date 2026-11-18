@@ -45,7 +45,7 @@ What the pipeline keeps true, whatever the stage:
 ## Structure
 
 - One way in for each kind of feedback: `im ideas --review` and the verdict events in `pub.feedback_events` land in
-  the same `im.item_verdicts`, and `im themes` inserts the same `pub.feedback_events` any other client does.
+  the same `im.item_verdicts`, and `im lens` inserts the same `pub.feedback_events` any other client does.
 - Idea Machine reads Hearsay only through its file stream, and the web view reads Idea Machine only through the
   views in schema `pub`.
 
@@ -141,9 +141,8 @@ Where Idea Machine doesn't follow the org standards yet. These are debt to pay d
 - Shell: `make check` doesn't run shellcheck, which reports 19 findings.
 - SQL: `pipeline.run` sets `REPEATABLE READ` on the connection, so the later stages of `im run` inherit it.
 - SQL: some table names aren't plural nouns: `im.ingest_state` (001), `im.egress_log` (007),
-  `im.feedback_applied` (009), `im.idea_sensitivity` and `im.theme_sensitivity` (027).
+  `im.feedback_applied` (009), `im.idea_sensitivity` (027) and `im.lens_sensitivity` (071).
 - SQL: these closed sets have no `CHECK`: `im.episodes.kind` (001, line 30), `im.source_segments.speaker_kind` and
   `speaker_basis` (002, lines 24 and 27), `im.source_supersessions.method` (002, line 52; its comment omits `rekey`,
-  which `importer.py` line 212 writes), `im.items.kind` (007, line 31), `im.idea_themes.origin` (008, line 78),
-  `pub.feedback_events.source` (008, line 97), and the `categories` of `im.idea_sensitivity` and
-  `im.theme_sensitivity` (027, lines 9 and 17).
+  which `importer.py` line 212 writes), `im.items.kind` (007, line 31), `pub.feedback_events.source` (008, line 97),
+  and the `categories` of `im.idea_sensitivity` (027, line 9) and `im.lens_sensitivity` (071).

@@ -1,14 +1,15 @@
-"""Sensitivity tags (decision 0012): eight descriptive tags on each idea and theme, so demo mode, in any presentation
+"""Sensitivity tags (decision 0012): eight descriptive tags on each idea and lens, so demo mode, in any presentation
 layer, can leave out what I'd rather not show (the `demo` schema).
 
 Jev answers one yes or no per tag (jev.QUESTIONS["sensitivity"]) about each shown idea (title, statement, the
 archive's notes and my note, my corrections winning, and up to three of its quotes, since swearing is usually in what
-was said) and each theme (name and description). A shown idea is any presentation's: in pub.ideas or on a card,
-which also shows a cluster whose every capture I discarded. A tag holds at CUT or above, and Jev's probabilities are
-kept beside the tags, so the cut can be set later from my own marks. The tags describe; pub.sensitivity counts
-anything with a tag as sensitive, and my own marks (idea_sensitive, theme_sensitive) win there, either way. An idea
-or theme is asked about again when its text changes, at most MAX_PER_RUN a run. One tagged under another question set
-or cut with the same text is held by the re-read gate (im.reread), its tags standing, until `im reread sensitivity`.
+was said) and each lens, shown as the theme it's listed as (name and description; themes became lenses in M5). A
+shown idea is any presentation's: in pub.ideas or on a card, which also shows a cluster whose every capture I
+discarded. A tag holds at CUT or above, and Jev's probabilities are kept beside the tags, so the cut can be set later
+from my own marks. The tags describe; pub.sensitivity counts anything with a tag as sensitive, and my own marks
+(idea_sensitive, theme_sensitive) win there, either way. An idea or lens is asked about again when its text changes,
+at most MAX_PER_RUN a run. One tagged under another question set or cut with the same text is held by the re-read
+gate (im.reread), its tags standing, until `im reread sensitivity`.
 """
 
 import hashlib
@@ -52,8 +53,9 @@ def _todo(conn, tv: str) -> tuple[list[tuple], list[tuple]]:
                WHERE d.idea_id IN (SELECT idea_id FROM pub.ideas UNION SELECT idea_id FROM pub.cards)
                ORDER BY d.created_at, d.idea_id""", (QUOTES,))]
     rows += [("theme", i, {"theme": n} | ({"description": d} if d else {}), h, v) for i, n, d, h, v in conn.execute(
-        """SELECT t.theme_id, t.name, coalesce(t.description, ''), s.input_hash, s.tagger_version
-           FROM im.themes t LEFT JOIN im.theme_sensitivity s USING (theme_id) ORDER BY t.created_at, t.theme_id""")]
+        """SELECT l.lens_id, l.name, l.description, s.input_hash, s.tagger_version
+           FROM im.lenses l LEFT JOIN im.lens_sensitivity s USING (lens_id) WHERE l.state <> 'archived'
+           ORDER BY l.created_at, l.lens_id""")]
     todo, held = [], []
     for kind, id_, item, h, v in rows:
         now = _key(item)[1]
@@ -114,7 +116,7 @@ def tag_stage(conn, client: jev.Jev, monthly_cap_usd: float = 20.0, limit: int |
             continue
         p = {t: round(a.data[t], 3) for t in TAGS}
         tags = [t for t in TAGS if p[t] >= CUT]
-        table, key = ("idea_sensitivity", "idea_id") if kind == "idea" else ("theme_sensitivity", "theme_id")
+        table, key = ("idea_sensitivity", "idea_id") if kind == "idea" else ("lens_sensitivity", "lens_id")
         conn.execute(
             f"""INSERT INTO im.{table} ({key}, categories, probabilities, input_hash, tagger_version)
                 VALUES (%s, %s, %s, %s, %s)

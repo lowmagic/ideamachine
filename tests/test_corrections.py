@@ -5,13 +5,12 @@ import json
 import psycopg
 import pytest
 
-from im import extract, lattice, themes
+from im import extract, lattice
 from im.fixtures import _me
 
 from helpers import HashEmbedder, run, table
 from test_extract import FakeClaude
 from test_lattice import FakeMatcher, items_for
-from test_themes import FakeThemer
 
 
 def event(admin, kind, idea_id, payload):
@@ -59,20 +58,6 @@ def test_matching_and_embeddings_use_the_correction(seeded_lattice, admin, cfg, 
     lattice.match_stage(pipe, claude, HashEmbedder())
     sent = json.dumps([c["messages"] for c in claude.calls])
     assert "statement (mine): Coffee runs are where the real meeting happens.\\n   my note: office ritual" in sent
-
-
-def test_a_correction_refiles_the_idea_but_keeps_my_themes(seeded_lattice, admin):
-    pipe = seeded_lattice
-    themes.file_stage(pipe, FakeThemer())
-    evolved = idea_where(pipe, "Broken builds%")
-    added = idea_where(pipe, "%coffee%")
-    assert table(pipe, "SELECT origin FROM im.idea_themes WHERE idea_id = %s", evolved) == [("assigned",)]
-    for idea in (evolved, added):
-        event(admin, "idea_correct", idea, {"statement": "corrected"})
-    assert themes.refile_corrected(pipe) == 1   # the idea I added had no filer check: nothing to redo
-    assert table(pipe, "SELECT count(*) FROM im.idea_themes WHERE idea_id = %s", evolved) == [(0,)]
-    assert table(pipe, "SELECT origin FROM im.idea_themes WHERE idea_id = %s", added) == [("mine",)]
-    assert themes.file_stage(pipe, FakeThemer())["pending"] >= 1
 
 
 def test_an_idea_event_must_name_its_idea(seeded_lattice, admin):

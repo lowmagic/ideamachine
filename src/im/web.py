@@ -11,14 +11,19 @@ conversation as the path it took from thought to thought, and Crossroads (`/cros
 said around it and what's like it; and Echoes (`/echoes`), every connection between thoughts said in different
 conversations; and Threads (`/threads`), the neighborhoods of connected thoughts that run through several
 conversations; and Apart (`/apart`), the near pairs the connection judge kept apart; and Tree (`/tree`), the Tree of
-Life turned in three dimensions, and Grid (`/grid`), a cell a lens, a neighborhood standing in for each lens until
-lenses exist. They only read.
+Life turned in three dimensions, and Grid (`/grid`), a cell a lens: each board shows the lenses I placed on it, and a
+neighborhood stands in where I haven't placed one. They only read.
+
+Lenses (decision 0013, im.lens) have their own pages: `/lenses` lists them and makes one, `/lens/<id>` shows one's
+cards and why each is in, and edits it, keeps it at hand, archives it, or pins a card out; a card's page pins it into
+or out of a lens; `/board/tree` and `/board/grid` put a lens in a board's place; `/sky?lens=<id>` lights its cards.
+Each is my feedback event.
 
 Demo mode is the app's one setting (pub.app_settings): `/demo` turns it on from any device, and off again only with
 the token, so whoever I hand the phone to can't; `im demo on|off` does it from the shell, and `im web --demo` forces
 it on. While it's on, every page reads the `demo` views instead of `pub`'s, so nothing sensitive is there to show:
 the sky keeps a sensitive cluster's star, blank, with its edges, and the lists (the feed, a card's quotes and
-connections) leave it out. Nothing can be kept or dismissed in demo mode.
+connections, a lens's cards) leave it out. Nothing can be kept, dismissed or changed in demo mode.
 
 It also serves the MCP server (im.mcp) at /mcp, behind the same token as a bearer header, demo mode included.
 
@@ -129,7 +134,7 @@ def feed(conn, show: str = "candidates", page: int = 0, demo: bool = False) -> s
                  (list(maturities), PAGE + 1, page * PAGE))
     tabs = " ".join(f'<a href="/?show={k}"{" aria-current=page" if k == show else ""}>{name}</a>'
                     for k, (_, name) in SHOW.items()) + ' <a href="/sky">sky</a> <a href="/trails">trails</a>' \
-        + ' <a href="/echoes">echoes</a> <a href="/threads">threads</a> <a href="/apart">apart</a> <a href="/crossroads">crossroads</a> <a href="/tree">tree</a> <a href="/grid">grid</a>' \
+        + ' <a href="/echoes">echoes</a> <a href="/threads">threads</a> <a href="/apart">apart</a> <a href="/crossroads">crossroads</a> <a href="/tree">tree</a> <a href="/grid">grid</a> <a href="/lenses">lenses</a>' \
         + f' <a href="/demo">{"leave demo mode" if demo else "demo mode"}</a>'
     cards = "".join(f'<li><a href="/idea/{r["idea_id"]}">{_e(r["title"])}</a><p>{_e(r["statement"])}</p>'
                     f'<small>{_e(_facts(r))}</small></li>' for r in rows[:PAGE])
@@ -179,7 +184,26 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
     body.append("<h2>Near by meaning</h2><ul>" + "".join(
         f'<li><a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a> <small>{x["similarity"]:.2f}</small></li>'
         for x in near) + "</ul>" if near else "")
+    body.append(_card_lenses(conn, idea_id, demo))
     return _page(r["title"], "".join(body))
+
+
+def _card_lenses(conn, idea_id: str, demo: bool) -> str:
+    """The lenses a card is in, and why; and, outside demo mode, a lens to pin it into or out of."""
+    v = _views(demo)
+    rows = _rows(conn, f"""SELECT l.lens_id, l.name, m.why FROM {v}lens_members m JOIN pub.lenses l USING (lens_id)
+                           WHERE m.idea_id = %s ORDER BY lower(l.name)""", (idea_id,))
+    shown = "<h2>Lenses</h2><ul>" + "".join(
+        f'<li><a href="/lens/{x["lens_id"]}">{_e(x["name"])}</a> '
+        f'<small>{"pinned in" if x["why"] == "pin" else "by its query"}</small></li>' for x in rows) + "</ul>" \
+        if rows else ""
+    lenses = _rows(conn, "SELECT lens_id, name FROM pub.lenses WHERE state <> 'archived' ORDER BY lower(name)")
+    if demo or not lenses:
+        return shown
+    options = "".join(f'<option value="{x["lens_id"]}">{_e(x["name"])}</option>' for x in lenses)
+    return (shown + f'<form method="post" action="/idea/{idea_id}"><select name="lens" aria-label="lens">{options}'
+            '</select> <button name="action" value="lens_in">pin in</button><button name="action" value="lens_out">'
+            'pin out</button><button name="action" value="lens_unpin">unpin</button></form>')
 
 
 def _why(idea_id: str, near: list) -> str:
@@ -199,17 +223,24 @@ def _why(idea_id: str, near: list) -> str:
 SIZES = {"observation": 0, "candidate": 1, "idea": 2}   # a canonical idea is one bigger than a pinned one
 
 
-def sky(conn, seed: str | None = None, demo: bool = False) -> str | None:
-    """Every card at its place on the one map (decision 0005, amended). With a seed, a lens lights what's relevant to
-    it; without one, the encodings light everything. None if the seed isn't on the map. In demo mode a sensitive
-    card keeps its star, blank. The page loads the map once: lighting it from another card fetches only that view's
-    relevance (sky_lens)."""
+def sky(conn, seed: str | None = None, demo: bool = False, lens_id: str | None = None) -> str | None:
+    """Every card at its place on the one map (decision 0005, amended). With a seed, the view from it lights what's
+    relevant to it; with a lens, the lens lights its cards; with neither, the encodings light everything. None if the
+    seed isn't on the map, or there's no such lens. In demo mode a sensitive card keeps its star, blank. The page
+    loads the map once: lighting it from another card fetches only that view's relevance (sky_lens)."""
+    from im import lens
+
     v = _views(demo)
     rows = _rows(conn, f"""SELECT c.*, p.x, p.y FROM {v}cards c JOIN pub.card_positions p USING (idea_id)
                            ORDER BY c.idea_id""")
     index = {str(r["idea_id"]): n for n, r in enumerate(rows)}
     if seed is not None and seed not in index:
         return None
+    shown = None
+    if lens_id is not None:
+        shown = _rows(conn, "SELECT lens_id, name FROM pub.lenses WHERE lens_id = %s", (lens_id,))
+        if not shown:
+            return None
     now = datetime.now(timezone.utc)
     stars = [[str(r["idea_id"]), round(float(r["x"]), 4), round(float(r["y"]), 4),
               SIZES[r["maturity"]] + (r["kept_as"] == "canonical"), r["conversations"],
@@ -219,9 +250,14 @@ def sky(conn, seed: str | None = None, demo: bool = False) -> str | None:
     links = sorted({tuple(sorted((index[a], index[b]))) for a, b in conn.execute(
         """SELECT a::text, b::text FROM pub.card_links UNION ALL SELECT from_id::text, to_id::text FROM pub.card_lineage""")
         if a in index and b in index and a != b})
-    rel = _relevance(conn, seed, index) if seed else None
+    if seed:
+        rel = _relevance(conn, seed, index)
+    elif shown:
+        rel = {str(m["idea_id"]): 1 for m in lens.members(conn, lens_id, demo) if str(m["idea_id"]) in index}
+    else:
+        rel = None
     data = json.dumps({"stars": stars, "links": links, "rel": rel, "seed": seed}, separators=(",", ":"))
-    title = (rows[index[seed]]["title"] or "Sky") if seed else "Sky"
+    title = (rows[index[seed]]["title"] or "Sky") if seed else shown[0]["name"] if shown else "Sky"
     return _SKY.replace("{title}", _e(title)).replace("{data}", data.replace("</", "<\\/"))
 
 
@@ -281,11 +317,12 @@ TREE_ALSO = 2      # the stand-in for a card on several lenses: this many connec
 
 def tree(conn, demo: bool = False) -> str:
     """The Tree of Life as a Trellis board (docs/design/m6-emanation.md, Tree): every card, and which of the tree's 32
-    lenses it's on, for the page to gather around the sephirot and the paths. There are no lenses yet (decision
-    0013), so a graph neighbourhood stands in for each: the TREE_LENSES largest (lens.neighbourhoods), the largest on
-    Kether. A card is also on another lens when TREE_ALSO of its connections lead into that one's neighbourhood, so
-    the page has cards on several lenses to draw. Which neighbourhood is on which lens means nothing. `named` is the
-    first card said in each. In demo mode a sensitive card is on no lens, blank, with no connections."""
+    lenses it's on, for the page to gather around the sephirot and the paths. A place holds the lens I put there (the
+    Tree board, lens.places); until I put one, a graph neighbourhood stands in, the place's as before: the n-th
+    largest (lens.neighbourhoods) at the n-th place, the largest on Kether. A card is also on a stand-in when
+    TREE_ALSO of its connections lead into that one's neighbourhood, so the page has cards on several lenses to draw.
+    Which neighbourhood is on which place means nothing. `named` is the first card said in each stand-in, `placed`
+    each place's lens ([name, id]). In demo mode a sensitive card is on no lens, blank, with no connections."""
     from im import lens
 
     rows = _rows(conn, f"SELECT * FROM {_views(demo)}cards ORDER BY idea_id")
@@ -296,35 +333,45 @@ def tree(conn, demo: bool = False) -> str:
     for a, b in pairs:
         near[a].add(b)
         near[b].add(a)
-    on, named = {}, []
+    held = {lens.TREE_PLACES.index(p): x for p, x in lens.places(conn, "tree").items()}
+    placed = [[held[n]["name"], held[n]["id"]] if n in held else None for n in range(TREE_LENSES)]
+    members: dict = defaultdict(set)
+    for n, x in held.items():
+        for m in lens.members(conn, x["id"], demo):
+            if str(m["idea_id"]) in index:
+                members[str(m["idea_id"])].add(n)
+    on, named = {}, [""] * TREE_LENSES
     for n, group in enumerate(lens.neighbourhoods(pairs)[:TREE_LENSES]):
+        if n in held:
+            continue
         on.update((i, n) for i in group)
         first = min(group, key=lambda i: (rows[index[i]]["first_said"] is None, rows[index[i]]["first_said"], i))
-        named.append(rows[index[first]]["title"] or "")
+        named[n] = rows[index[first]]["title"] or ""
 
     def lenses(i: str) -> list[int]:
-        if i not in on:
-            return []
-        into = Counter(on[n] for n in near[i] if n in on and on[n] != on[i])
-        return [on[i], *sorted(n for n, k in into.items() if k >= TREE_ALSO)]
+        standing = []
+        if i in on:
+            into = Counter(on[n] for n in near[i] if n in on and on[n] != on[i])
+            standing = [on[i], *(n for n, k in into.items() if k >= TREE_ALSO)]
+        return sorted(members.get(i, set()) | set(standing))
 
     stars = [[str(r["idea_id"]), r["title"] or "", lenses(str(r["idea_id"]))] for r in rows]
     order = {str(r["idea_id"]): n for n, r in enumerate(rows)}
-    data = json.dumps({"stars": stars, "links": [[order[a], order[b]] for a, b in pairs], "named": named},
-                      separators=(",", ":"))
+    data = json.dumps({"stars": stars, "links": [[order[a], order[b]] for a, b in pairs], "named": named,
+                       "placed": placed}, separators=(",", ":"))
     return _TREE.replace("{data}", data.replace("</", "<\\/"))
 
 
-GRID_CARDS = 3   # the least a cell of the grid holds
+GRID_CARDS = 3   # the least a stand-in cell of the grid holds
 
 
 def grid(conn, demo: bool = False) -> str:
     """A grid of lenses, the plainer Trellis board (docs/design/m6-emanation.md, Grid): one cell a lens, its cards
     drawn as a small constellation, each where the sky puts it relative to the others, with the connections among
-    them. There are no lenses yet (decision 0013), so a graph neighbourhood of at least GRID_CARDS cards stands in for
-    each (lens.neighbourhoods), named by the first card said in it, and nothing places a cell by hand: they come in
-    the order they began. A star opens its card's crossroads; a cell's cards can be lit on the sky or the tree. In
-    demo mode a sensitive card is in no cell."""
+    them. First the lenses I placed on the Grid board, in the order of their cells (lens.places); then, standing in
+    for the lenses not made yet, each graph neighbourhood of at least GRID_CARDS cards (lens.neighbourhoods), named by
+    the first card said in it, in the order they began. A star opens its card's crossroads; a cell's cards can be lit
+    on the sky or the tree. In demo mode a sensitive card is in no cell."""
     from im import lens
 
     v = _views(demo)
@@ -336,11 +383,11 @@ def grid(conn, demo: bool = False) -> str:
     at = {i: (float(r["x"]), -float(r["y"])) for i, r in cards.items() if r["x"] is not None}
     mx, my = (sum(p[0] for p in at.values()) / len(at), sum(p[1] for p in at.values()) / len(at)) if at else (0, 0)
     when = lambda i: (cards[i]["first_said"] is None, cards[i]["first_said"], i)   # noqa: E731
-    cells = []
-    for group in lens.neighbourhoods(pairs):
-        if len(group) < GRID_CARDS:
-            continue
-        order, inside = sorted(group, key=when), set(group)
+
+    def cell(order: list[str], name: str, facts: str) -> str:
+        if not order:
+            return f'<section><svg viewBox="0 0 100 100" role="img" aria-label="no cards"></svg>{name}{facts}</section>'
+        inside = set(order)
         # Each card where the sky puts it, the group scaled to fill the cell; one the sky hasn't placed sits in a ring.
         spot = {i: at.get(i) or (mx + math.cos(n), my + math.sin(n)) for n, i in enumerate(order)}
         x0, y0 = min(p[0] for p in spot.values()), min(p[1] for p in spot.values())
@@ -356,16 +403,31 @@ def grid(conn, demo: bool = False) -> str:
             f'{round(math.degrees(math.atan2(spot[i][1] - my, spot[i][0] - mx)) % 360)}; --d: {n % 7}">'
             f'<title>{_e(cards[i]["title"])}</title></circle></a>' for n, i in enumerate(order))
         lit = ",".join(order)
-        cells.append((when(order[0]), (
-            f'<section><svg viewBox="0 0 100 100" role="img" aria-label="{len(order)} connected cards">{lines}{stars}'
-            f'</svg><b>{_e(cards[order[0]]["title"])}</b><small>{len(order)} cards · began '
-            f'{_when(cards[order[0]]["first_said"])}</small><small><a href="/sky?lit={lit}">on the sky</a>'
-            f'<a href="/tree?lit={lit}">on the tree</a></small></section>')))
-    cells.sort(key=lambda c: c[0])
-    body = (f'<h1>Grid</h1><p class="lede">{len(cells)} cell{"s" * (len(cells) != 1)}. There are no lenses yet, so each '
-            f'cell holds a neighborhood of connected cards as a stand-in, named by the first thing said in it, in the '
-            f'order they began. A star is a card, placed as the sky places it among the others.</p>'
-            + (f'<div class="grid">{"".join(c for _, c in cells)}</div>' if cells else "<p>Nothing here.</p>"))
+        return (f'<section><svg viewBox="0 0 100 100" role="img" aria-label="{len(order)} connected cards">{lines}'
+                f'{stars}</svg>{name}{facts}<small><a href="/sky?lit={lit}">on the sky</a>'
+                f'<a href="/tree?lit={lit}">on the tree</a></small></section>')
+
+    placed = []
+    for place, x in sorted(lens.places(conn, "grid").items(), key=lambda p: int(p[0])):
+        order = sorted((str(m["idea_id"]) for m in lens.members(conn, x["id"], demo) if str(m["idea_id"]) in cards),
+                       key=when)
+        placed.append(cell(order, f'<b><a href="/lens/{x["id"]}">{_e(x["name"])}</a></b>',
+                           f'<small>{len(order)} card{"s" * (len(order) != 1)} · a lens</small>'))
+    standing = []
+    for group in lens.neighbourhoods(pairs):
+        if len(group) < GRID_CARDS:
+            continue
+        order = sorted(group, key=when)
+        standing.append((when(order[0]), cell(order, f'<b>{_e(cards[order[0]]["title"])}</b>',
+                                              f'<small>{len(order)} cards · began '
+                                              f'{_when(cards[order[0]]["first_said"])}</small>')))
+    standing.sort(key=lambda c: c[0])
+    cells = placed + [c for _, c in standing]
+    body = (f'<h1>Grid</h1><p class="lede">{len(placed)} lens{"es" * (len(placed) != 1)} I placed '
+            f'(<a href="/board/grid">the board</a>), then {len(standing)} neighborhood{"s" * (len(standing) != 1)} '
+            f'of connected cards standing in for the lenses not made yet, each named by the first thing said in it, '
+            f'in the order they began. A star is a card, placed as the sky places it among the others.</p>'
+            + (f'<div class="grid">{"".join(cells)}</div>' if cells else "<p>Nothing here.</p>"))
     return _GRID.replace("{body}", body)
 
 
@@ -707,6 +769,235 @@ def anywhere(conn, demo: bool = False) -> str | None:
     return row[0] if row else None
 
 
+# Where each of the Tree's paths runs, counted from 1 along lens.TREE_PLACES's sephirot (tree.html, PATHS).
+TREE_ENDS = ((1, 2), (1, 3), (1, 6), (2, 3), (2, 6), (2, 4), (3, 6), (3, 5), (4, 5), (4, 6), (4, 7), (5, 6), (5, 8),
+             (6, 7), (6, 9), (6, 8), (7, 8), (7, 9), (7, 10), (8, 9), (8, 10), (9, 10))
+
+
+def _place_name(drawing: str, place: str) -> str:
+    """A board's place as the page names it: a sephira, a path with its letter and ends, or a numbered cell."""
+    from im import lens
+
+    if drawing == "grid":
+        return f"Cell {place}"
+    n = lens.TREE_PLACES.index(place)
+    if n < 10:
+        return place.capitalize()
+    a, b = TREE_ENDS[n - 10]
+    return (f"Path {n + 1}, {place.capitalize()} ({lens.TREE_PLACES[a - 1].capitalize()} to "
+            f"{lens.TREE_PLACES[b - 1].capitalize()})")
+
+
+def _lens_fields(x: dict | None = None) -> str:
+    """The fields that make or edit a lens: its name and description, its kind, and the filters an `all` or `jev`
+    lens takes. A `jev` lens's questions are built offline and imported (`im lens import`), so its form keeps them.
+    A filter left as it comes (every box ticked, either) admits everything."""
+    from im import lens
+
+    x = x or {"name": "", "description": "", "kind": "all", "filters": {}}
+    f = x["filters"] or {}
+    offered = (*lens.MADE_HERE, "jev") if x["kind"] == "jev" else lens.MADE_HERE
+    kinds = "".join(f'<label><input type="radio" name="kind" value="{k}"{" checked" * (x["kind"] == k)}> {k}: '
+                    f'{_e("keep its questions" if k == "jev" else lens.KINDS[k])}</label><br>' for k in offered)
+
+    def boxes(key: str, values: tuple) -> str:
+        return "".join(f'<label><input type="checkbox" name="{key}" value="{v}"'
+                       f'{" checked" * (v in f.get(key, values))}> {v}</label> ' for v in values)
+
+    def either(key: str, label: str, yes: str, no: str) -> str:
+        now = {True: "yes", False: "no"}.get(f.get(key), "")
+        return (f'<label>{label} <select name="{key}">' + "".join(
+            f'<option value="{v}"{" selected" * (v == now)}>{says}</option>'
+            for v, says in (("", "either"), ("yes", yes), ("no", no))) + "</select></label>")
+
+    return (f'<p><label>Name <input name="name" maxlength="80" required value="{_e(x["name"])}"></label></p>'
+            f'<p><label>Description<br><textarea name="description" rows="3" cols="40" maxlength="2000">'
+            f'{_e(x["description"])}</textarea></label></p><p>{kinds}</p>'
+            f'<fieldset><legend>Filters (an all or Jev lens)</legend>'
+            f'<p>Maturity: {boxes("maturity", lens.MATURITIES)}</p><p>Kept: {boxes("kept_as", lens.KEPT)}</p>'
+            f'<p>{either("said_by_me", "Who", "said by me", "not said by me")} '
+            f'{either("sensitive", "Sensitive", "sensitive", "not sensitive")}</p><p><label>Said since '
+            f'<input type="date" '
+            f'name="said_since" value="{_e(f.get("said_since", ""))}"></label> <label>until <input type="date" '
+            f'name="said_until" value="{_e(f.get("said_until", ""))}"></label></p></fieldset>')
+
+
+def lens_payload(form: dict, lists: dict, kind_now: str | None = None) -> dict:
+    """A lens's name, description, query and filters from its form (`lists`: every value of each field, for the
+    boxes). A `jev` lens edited as `jev` keeps its query (none is sent). ValueError for no name, or a kind the form
+    can't make."""
+    from im import lens
+
+    name, kind = form.get("name", "").strip(), form.get("kind", "all")
+    if not name or kind not in lens.MADE_HERE and not (kind == "jev" and kind_now == "jev"):
+        raise ValueError("a lens needs a name, and a kind made here (a Jev lens is imported: im lens import)")
+    filters: dict = {}
+    if kind != "none":
+        for key, values in (("maturity", lens.MATURITIES), ("kept_as", lens.KEPT)):
+            chosen = [v for v in values if v in lists.get(key, [])]
+            if 0 < len(chosen) < len(values):
+                filters[key] = chosen
+        for key in ("said_by_me", "sensitive"):
+            if form.get(key) in ("yes", "no"):
+                filters[key] = form[key] == "yes"
+        for key in ("said_since", "said_until"):
+            if form.get(key, "").strip():
+                filters[key] = form[key].strip()
+    return ({"name": name, "description": form.get("description", "").strip(), "filters": filters}
+            | ({} if kind == "jev" else {"query": {"kind": kind}}))
+
+
+def _name_taken(conn, name: str, lens_id: str | None = None) -> bool:
+    return conn.execute("SELECT 1 FROM pub.lenses WHERE lower(btrim(name)) = lower(btrim(%s)) AND lens_id::text <> %s",
+                        (name, lens_id or "")).fetchone() is not None
+
+
+def lenses_page(conn, demo: bool = False) -> str:
+    """/lenses: every lens, those kept at hand first, with how many cards each holds; and, outside demo mode, a lens
+    to make."""
+    from im import lens
+
+    items = "".join(
+        f'<li><a href="/lens/{x["id"]}">{_e(x["name"])}</a> <small>{x["cards"]} card{"s" * (x["cards"] != 1)} · '
+        f'{_e(lens.describe(x))} · {lens.STATES[x["state"]]}</small>'
+        + (f'<p>{_e(x["description"])}</p>' if x["description"] else "") + "</li>" for x in lens.stored(conn, demo))
+    make = "" if demo else (f'<h2>Make a lens</h2><form method="post" action="/lenses">{_lens_fields()}'
+                            "<button>Make it</button></form>")
+    return _page("Lenses", '<nav><a href="/">Feed</a><a href="/board/tree">the Tree board</a><a href="/board/grid">'
+                           f'the Grid board</a></nav><h1>Lenses</h1><ol>{items or "<li>No lenses yet.</li>"}</ol>'
+                           f'{make}')
+
+
+def _in_by(member: dict) -> str:
+    """Why a card is in a lens, in words: my pin, or the query, with its score where it gave one."""
+    if member["why"] == "pin":
+        return "pinned in"
+    return "by its query" + ("" if member["score"] is None else f" at {member['score']:.2f}")
+
+
+def lens_page(conn, lens_id: str, page: int = 0, demo: bool = False) -> str | None:
+    """/lens/<id>: a lens, its cards and why each is in (my pin or its query), how much of the map it has judged and
+    where it's placed; outside demo mode, to keep it at hand, archive it, edit it, and pin a card out or unpin it.
+    None if there's no such lens."""
+    from im import lens
+
+    found = [x for x in lens.stored(conn, demo) if x["id"] == lens_id]
+    if not found:
+        return None
+    x = found[0]
+    cards = lens.members(conn, lens_id, demo)
+    asked, of = lens.judged(conn, x, demo)
+    where = ", ".join(f'<a href="/{d}">{_e(_place_name(d, p))} on the {d}</a>'
+                      for d, p in conn.execute("""SELECT b.drawing, p.place FROM pub.board_lenses p
+                                                  JOIN pub.boards b USING (board_id) WHERE p.lens_id = %s
+                                                  ORDER BY b.drawing, p.place""", (lens_id,)))
+    body = [f'<nav><a href="/lenses">Lenses</a></nav><h1>{_e(x["name"])}</h1>',
+            f'<p>{_e(x["description"])}</p>' if x["description"] else "",
+            f'<small>{_e(lens.describe(x))} · {lens.STATES[x["state"]]} · judged {asked:,} of {of:,} · '
+            f'{len(cards)} card{"s" * (len(cards) != 1)}</small>',
+            f'<p><a href="/sky?lens={lens_id}">On the sky</a>' + (f" · {where}" if where else "") + "</p>"]
+    if x["kind"] == "jev":
+        body.append("<details><summary>its questions</summary><ol>" + "".join(
+            f"<li>{_e(q)}" + (f"<br><small>yes: {_e(c['true'])} · no: {_e(c['false'])}</small>" if c else "") + "</li>"
+            for q, c in x["query"]["deciding"].values()) + "</ol></details>")
+    if not demo:
+        states = "".join(f'<button name="state" value="{s}">{says}</button>'
+                         for s, says in (("pinned", "keep at hand"), ("active", "make active"), ("archived", "archive"))
+                         if s != x["state"])
+        body += [f'<form method="post" action="/lens/{lens_id}"><input type="hidden" name="action" value="state">'
+                 f'{states}</form>',
+                 f'<details><summary>edit</summary><form method="post" action="/lens/{lens_id}"><input type="hidden" '
+                 f'name="action" value="edit">{_lens_fields(x)}<button>Save</button></form></details>']
+
+    def unpick(idea: str, action: str, says: str) -> str:
+        return ("" if demo else f'<form method="post" action="/lens/{lens_id}"><input type="hidden" name="idea" '
+                f'value="{idea}"><button name="action" value="{action}">{says}</button></form>')
+
+    shown = cards[page * PAGE:(page + 1) * PAGE]
+    body.append("<ol>" + "".join(
+        f'<li><a href="/idea/{c["idea_id"]}">{_e(c["title"])}</a><p>{_e(c["statement"])}</p><small>{_e(_facts(c))} · '
+        f'{_in_by(c)}</small>'
+        + unpick(c["idea_id"], "unpin" if c["why"] == "pin" else "pin_out", "unpin" if c["why"] == "pin" else "pin out")
+        + "</li>" for c in shown) + "</ol>" if shown else "<p>No cards in it.</p>")
+    if len(cards) > (page + 1) * PAGE:
+        body.append(f'<a href="/lens/{lens_id}?page={page + 1}">more</a>')
+    if not demo:
+        out = _rows(conn, """SELECT c.idea_id, c.title FROM pub.lens_pins p JOIN pub.cards c USING (idea_id)
+                             WHERE p.lens_id = %s AND p.pin = 'out' ORDER BY c.title""", (lens_id,))
+        body.append("<h2>Pinned out</h2><ul>" + "".join(
+            f'<li><a href="/idea/{c["idea_id"]}">{_e(c["title"])}</a>{unpick(c["idea_id"], "unpin", "unpin")}</li>'
+            for c in out) + "</ul>" if out else "")
+    return _page(x["name"], "".join(body))
+
+
+def lens_act(conn, lens_id: str, form: dict, lists: dict) -> None:
+    """A lens's form, sent as my event: keep it at hand, make it active or archive it; edit it; pin a card in or out
+    of it, or unpin one. ValueError for anything else, or a name another lens has."""
+    from im import lens
+
+    action = form.get("action")
+    if action == "state" and form.get("state") in lens.STATES:
+        lens.record(conn, "lens_state", {"lens_id": lens_id, "state": form["state"]})
+    elif action == "edit":
+        now = conn.execute("SELECT kind FROM pub.lenses WHERE lens_id = %s", (lens_id,)).fetchone()
+        payload = lens_payload(form, lists, now[0] if now else None)
+        if _name_taken(conn, payload["name"], lens_id):
+            raise ValueError("another lens has that name")
+        lens.record(conn, "lens_edit", {"lens_id": lens_id} | payload)
+    elif action in ("pin_in", "pin_out", "unpin") and _UUID.match(form.get("idea", "")):
+        if action == "unpin":
+            lens.record(conn, "lens_unpin", {"lens_id": lens_id}, form["idea"])
+        else:
+            lens.record(conn, "lens_pin", {"lens_id": lens_id, "pin": action.removeprefix("pin_")}, form["idea"])
+    else:
+        raise ValueError("not a lens action")
+
+
+def board_page(conn, drawing: str, demo: bool = False) -> str | None:
+    """/board/tree, /board/grid: a board's places and the lens each holds; outside demo mode, a lens to put in each,
+    or none to leave its stand-in. The Grid has as many cells as I fill, and one more. None for another drawing."""
+    from im import lens
+
+    if drawing not in ("tree", "grid"):
+        return None
+    held = lens.places(conn, drawing)
+    if drawing == "tree":
+        spots = list(lens.TREE_PLACES)
+    else:
+        taken = sorted(int(p) for p in held)
+        spots = [str(n) for n in taken] + [str(max(taken, default=0) + 1)]
+    choices = [x for x in lens.stored(conn, demo) if x["state"] != "archived"]
+
+    def pick(place: str) -> str:
+        now = held.get(place, {}).get("id", "")
+        options = '<option value="">a stand-in</option>' + "".join(
+            f'<option value="{x["id"]}"{" selected" * (x["id"] == now)}>{_e(x["name"])}</option>' for x in choices)
+        return (f'<form method="post" action="/board/{drawing}"><input type="hidden" name="place" value="{place}">'
+                f'<select name="lens" aria-label="lens">{options}</select> <button>Put</button></form>')
+
+    rows = "".join(
+        f'<li><b>{_e(_place_name(drawing, p))}</b> <small>'
+        + (f'<a href="/lens/{held[p]["id"]}">{_e(held[p]["name"])}</a>' if p in held else "a stand-in")
+        + "</small>" + ("" if demo else pick(p)) + "</li>" for p in spots)
+    return _page(f"The {drawing} board", f'<nav><a href="/{drawing}">The {drawing}</a><a href="/lenses">Lenses</a>'
+                                         f'</nav><h1>The {drawing} board</h1><ol>{rows}</ol>')
+
+
+def place(conn, drawing: str, spot: str, lens_id: str) -> None:
+    """Put a lens in a board's place, or none (`lens_id` empty) to leave the place's stand-in. ValueError for a place
+    the drawing hasn't."""
+    from im import lens
+
+    if not (drawing == "tree" and spot in lens.TREE_PLACES
+            or drawing == "grid" and re.fullmatch(r"[1-9]\d{0,2}", spot)):
+        raise ValueError("no such place")
+    board = lens.board(conn, drawing)
+    if lens_id:
+        lens.record(conn, "board_place", {"board_id": board, "place": spot, "lens_id": lens_id})
+    else:
+        lens.record(conn, "board_remove", {"board_id": board, "place": spot})
+
+
 def act(conn, idea_id: str, action: str, reason: str | None = None, of: str | None = None) -> None:
     """Write a card action as my feedback event. A dismissal may say why (feedback.DismissReason), and a duplicate
     which card it duplicates (`of`); neither is asked for. ValueError for a reason on anything but a dismissal, one
@@ -835,8 +1126,10 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def _form(self) -> dict:
+        """The first value of each field; every value of each is kept in `_lists`, for a form's checkboxes."""
         n = int(self.headers.get("Content-Length") or 0)
-        return {k: v[0] for k, v in parse_qs(self.rfile.read(min(n, 4096)).decode()).items()}
+        self._lists = parse_qs(self.rfile.read(min(n, 4096)).decode())
+        return {k: v[0] for k, v in self._lists.items()}
 
     def _send_static(self, path: str) -> None:
         data = files("im").joinpath("static", path.lstrip("/")).read_bytes()
@@ -866,8 +1159,9 @@ class Handler(BaseHTTPRequestHandler):
                 page = int(q["page"]) if q.get("page", "").isdigit() else 0
                 return self._send(200, feed(conn, q.get("show", "candidates"), page, demo))
             if url.path == "/sky":
-                seed = q.get("seed")
-                body = sky(conn, seed, demo) if seed is None or _UUID.match(seed) else None
+                seed, by = q.get("seed"), q.get("lens")
+                ok = (seed is None or _UUID.match(seed)) and (by is None or _UUID.match(by))
+                body = sky(conn, seed, demo, by) if ok else None
                 return self._send(200, body) if body else self._send(404, _page("Not found", "Not found."))
             if url.path == "/sky/lens":   # the page lighting itself from another card, without reloading the map
                 seed = q.get("seed", "")
@@ -889,11 +1183,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, tree(conn, demo))
             if url.path == "/grid":
                 return self._send(200, grid(conn, demo))
+            if url.path == "/lenses":
+                return self._send(200, lenses_page(conn, demo))
+            if url.path in ("/board/tree", "/board/grid"):
+                return self._send(200, board_page(conn, url.path.removeprefix("/board/"), demo))
             if url.path == "/crossroads":   # anywhere: a card at random
                 to = anywhere(conn, demo)
                 return self._send(303, headers={"Location": f"/crossroads/{to}" if to else "/"})
-            m = re.fullmatch(r"/(idea|crossroads)/([0-9a-f-]{36})", url.path)
-            body = (card if m[1] == "idea" else crossroads)(conn, m[2], demo) if m and _UUID.match(m[2]) else None
+            m = re.fullmatch(r"/(idea|crossroads|lens)/([0-9a-f-]{36})", url.path)
+            if m and m[1] == "lens" and _UUID.match(m[2]):
+                page = int(q["page"]) if q.get("page", "").isdigit() else 0
+                body = lens_page(conn, m[2], page, demo)
+            else:
+                body = (card if m[1] == "idea" else crossroads)(conn, m[2], demo) if m and _UUID.match(m[2]) else None
         self._send(200, body) if body else self._send(404, _page("Not found", "Not found."))
 
     def do_POST(self) -> None:
@@ -919,6 +1221,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     return self._send(403, demo_page(self._demo(conn), self.demo_only, "That token didn't work."))
             return self._send(303, headers={"Location": "/"})
+        if self._lens_writes(url.path, form):
+            return
         m = re.fullmatch(r"/idea/([0-9a-f-]{36})", url.path)
         if not (m and _UUID.match(m[1]) and form.get("action") in ACTIONS):
             return self._send(400, _page("Bad request", "Bad request."))
@@ -930,6 +1234,51 @@ class Handler(BaseHTTPRequestHandler):
             except ValueError:
                 return self._send(400, _page("Bad request", "Bad request."))
         self._send(303, headers={"Location": f"/idea/{m[1]}"})
+
+    LENS_FROM_CARD = {"lens_in": "pin_in", "lens_out": "pin_out", "lens_unpin": "unpin"}
+
+    def _lens_writes(self, path: str, form: dict) -> bool:
+        """A lens made or changed, a card pinned into or out of a lens from its page, or a board's place filled: sent as
+        my events, then back to the page it came from. False, having done nothing, if the request is none of these."""
+        from im import lens
+
+        idea = re.fullmatch(r"/idea/([0-9a-f-]{36})", path)
+        lens_path = re.fullmatch(r"/lens/([0-9a-f-]{36})", path)
+        board = re.fullmatch(r"/board/(tree|grid)", path)
+        from_card = idea and form.get("action") in self.LENS_FROM_CARD
+        if not (path == "/lenses" or lens_path or board or from_card):
+            return False
+        with psycopg.connect(self.dsn, autocommit=True) as conn:
+            if self._demo(conn):
+                self._send(403, _page("Demo mode", "Nothing can be changed in demo mode."))
+                return True
+            try:
+                if path == "/lenses":
+                    payload = lens_payload(form, self._lists)
+                    if _name_taken(conn, payload["name"]):
+                        raise ValueError("another lens has that name")
+                    made = lens.add(conn, payload["name"], payload["description"], payload["query"]["kind"],
+                                    payload["filters"])
+                    back = f"/lens/{made}" if made else "/lenses"
+                elif lens_path and _UUID.match(lens_path[1]):
+                    lens_act(conn, lens_path[1], form, self._lists)
+                    back = f"/lens/{lens_path[1]}"
+                elif board:
+                    place(conn, board[1], form.get("place", ""), form.get("lens", ""))
+                    back = f"/board/{board[1]}"
+                elif from_card and _UUID.match(idea[1]) and _UUID.match(form.get("lens", "")):
+                    lens_act(conn, form["lens"], {"action": self.LENS_FROM_CARD[form["action"]], "idea": idea[1]}, {})
+                    back = f"/idea/{idea[1]}"
+                else:
+                    raise ValueError("bad request")
+            except ValueError as e:
+                self._send(400, _page("Bad request", f"<p>{_e(e)}.</p>"))
+                return True
+            except (psycopg.errors.CheckViolation, psycopg.errors.ForeignKeyViolation):
+                self._send(400, _page("Bad request", "<p>That isn't a lens it can keep: check the dates.</p>"))
+                return True
+        self._send(303, headers={"Location": back})
+        return True
 
 
 class PublicHandler(Handler):

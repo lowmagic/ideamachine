@@ -16,8 +16,8 @@ from helpers import HashEmbedder, assert_invariants, run, segment_of, table
 from test_extract import FakeClaude
 from test_pipeline import LORA
 
-# Ideas I added before anything was captured: (title, statement, notes), then my two themes as (name, description,
-# members), and the method of the connection a judge made between the first two.
+# Ideas I added before anything was captured: (title, statement, notes), then my two themes, lenses that hold only what
+# I pin, as (name, description, members), and the method of the connection a judge made between the first two.
 SEEDED = [("A solitary unsatisfying grape.", "“A solitary unsatisfying grape.”",
            "Possible associations: disproportionate disappointment."),
           ("Signal may not be true, but it is…", "“Signal may not be true, but it is always correct.”",
@@ -30,19 +30,19 @@ JUDGED = "opus;edge-v1"
 
 
 def seed(conn) -> None:
-    """Three ideas I added (origin mine, kept as canonical), a judge's connection between #1 and #2, and my themes,
-    pinned."""
+    """Three ideas I added (origin mine, kept as canonical), a judge's connection between #1 and #2, and my themes:
+    lenses kept at hand, their members pinned in (by id: inserted by hand, the ideas have no speech to anchor to)."""
     ids = {n: conn.execute("""INSERT INTO im.ideas (title, statement, origin, notes)
                               VALUES (%s, %s, 'mine', %s) RETURNING idea_id""",
                            (title, statement, notes)).fetchone()[0]
            for n, (title, statement, notes) in enumerate(SEEDED, 1)}
     conn.execute("INSERT INTO im.connections (a, b, method) VALUES (%s, %s, %s)", (*sorted((ids[1], ids[2])), JUDGED))
     for name, description, members in SEEDED_THEMES:
-        (theme,) = conn.execute("""INSERT INTO im.themes (name, description, origin, pinned)
-                                   VALUES (%s, %s, 'mine', true) RETURNING theme_id""", (name, description)).fetchone()
+        (lens,) = conn.execute("""INSERT INTO im.lenses (lens_id, name, description, query, state)
+                                  VALUES (gen_random_uuid(), %s, %s, '{"kind": "none"}', 'pinned') RETURNING lens_id""",
+                               (name, description)).fetchone()
         for n in members:
-            conn.execute("INSERT INTO im.idea_themes (idea_id, theme_id, origin) VALUES (%s, %s, 'mine')",
-                         (ids[n], theme))
+            conn.execute("SELECT im.pin_idea(%s, %s, 'in', 0)", (lens, ids[n]))
 
 
 class FakeMatcher:

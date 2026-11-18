@@ -6,6 +6,7 @@ name goes to Anthropic, or under zero data retention (`[egress] zdr`) to OpenRou
 through `egress.ask`. OpenRouter reports what each request cost, so its models need no entry in PRICES.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -86,6 +87,12 @@ class Reply:
 
 def via_openrouter(model: str) -> bool:
     return "/" in model
+
+
+def version(*parts) -> str:
+    """A short hash of what a request is asked under (its prompt, schema, model, effort...): what it's logged and
+    its answers kept under. The same parts give the same version, whichever stage asks."""
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:12]
 
 
 def price(model: str) -> tuple[float, float] | None:
