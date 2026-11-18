@@ -195,7 +195,8 @@ def _card_lenses(conn, idea_id: str, demo: bool) -> str:
                            WHERE m.idea_id = %s ORDER BY lower(l.name)""", (idea_id,))
     shown = "<h2>Lenses</h2><ul>" + "".join(
         f'<li><a href="/lens/{x["lens_id"]}">{_e(x["name"])}</a> '
-        f'<small>{"pinned in" if x["why"] == "pin" else "by its query"}</small></li>' for x in rows) + "</ul>" if rows else ""
+        f'<small>{"pinned in" if x["why"] == "pin" else "by its query"}</small></li>' for x in rows) + "</ul>" \
+        if rows else ""
     lenses = _rows(conn, "SELECT lens_id, name FROM pub.lenses WHERE state <> 'archived' ORDER BY lower(name)")
     if demo or not lenses:
         return shown
@@ -788,14 +789,16 @@ def _place_name(drawing: str, place: str) -> str:
 
 
 def _lens_fields(x: dict | None = None) -> str:
-    """The fields that make or edit a lens: its name and description, its kind, and the filters an `all` lens takes.
+    """The fields that make or edit a lens: its name and description, its kind, and the filters an `all` or `jev`
+    lens takes. A `jev` lens's questions are built offline and imported (`im lens import`), so its form keeps them.
     A filter left as it comes (every box ticked, either) admits everything."""
     from im import lens
 
     x = x or {"name": "", "description": "", "kind": "all", "filters": {}}
     f = x["filters"] or {}
+    offered = (*lens.MADE_HERE, "jev") if x["kind"] == "jev" else lens.MADE_HERE
     kinds = "".join(f'<label><input type="radio" name="kind" value="{k}"{" checked" * (x["kind"] == k)}> {k}: '
-                    f'{_e(says)}</label><br>' for k, says in lens.KINDS.items())
+                    f'{_e("keep its questions" if k == "jev" else lens.KINDS[k])}</label><br>' for k in offered)
 
     def boxes(key: str, values: tuple) -> str:
         return "".join(f'<label><input type="checkbox" name="{key}" value="{v}"'
@@ -810,23 +813,26 @@ def _lens_fields(x: dict | None = None) -> str:
     return (f'<p><label>Name <input name="name" maxlength="80" required value="{_e(x["name"])}"></label></p>'
             f'<p><label>Description<br><textarea name="description" rows="3" cols="40" maxlength="2000">'
             f'{_e(x["description"])}</textarea></label></p><p>{kinds}</p>'
-            f'<fieldset><legend>Filters (an all lens)</legend><p>Maturity: {boxes("maturity", lens.MATURITIES)}</p>'
-            f'<p>Kept: {boxes("kept_as", lens.KEPT)}</p><p>{either("said_by_me", "Who", "said by me", "not said by me")} '
-            f'{either("sensitive", "Sensitive", "sensitive", "not sensitive")}</p><p><label>Said since <input type="date" '
+            f'<fieldset><legend>Filters (an all or Jev lens)</legend>'
+            f'<p>Maturity: {boxes("maturity", lens.MATURITIES)}</p><p>Kept: {boxes("kept_as", lens.KEPT)}</p>'
+            f'<p>{either("said_by_me", "Who", "said by me", "not said by me")} '
+            f'{either("sensitive", "Sensitive", "sensitive", "not sensitive")}</p><p><label>Said since '
+            f'<input type="date" '
             f'name="said_since" value="{_e(f.get("said_since", ""))}"></label> <label>until <input type="date" '
             f'name="said_until" value="{_e(f.get("said_until", ""))}"></label></p></fieldset>')
 
 
-def lens_payload(form: dict, lists: dict) -> dict:
+def lens_payload(form: dict, lists: dict, kind_now: str | None = None) -> dict:
     """A lens's name, description, query and filters from its form (`lists`: every value of each field, for the
-    boxes). ValueError for no name or an unknown kind."""
+    boxes). A `jev` lens edited as `jev` keeps its query (none is sent). ValueError for no name, or a kind the form
+    can't make."""
     from im import lens
 
     name, kind = form.get("name", "").strip(), form.get("kind", "all")
-    if not name or kind not in lens.KINDS:
-        raise ValueError("a lens needs a name and a kind")
+    if not name or kind not in lens.MADE_HERE and not (kind == "jev" and kind_now == "jev"):
+        raise ValueError("a lens needs a name, and a kind made here (a Jev lens is imported: im lens import)")
     filters: dict = {}
-    if kind == "all":
+    if kind != "none":
         for key, values in (("maturity", lens.MATURITIES), ("kept_as", lens.KEPT)):
             chosen = [v for v in values if v in lists.get(key, [])]
             if 0 < len(chosen) < len(values):
@@ -837,8 +843,8 @@ def lens_payload(form: dict, lists: dict) -> dict:
         for key in ("said_since", "said_until"):
             if form.get(key, "").strip():
                 filters[key] = form[key].strip()
-    return {"name": name, "description": form.get("description", "").strip(), "query": {"kind": kind},
-            "filters": filters}
+    return ({"name": name, "description": form.get("description", "").strip(), "filters": filters}
+            | ({} if kind == "jev" else {"query": {"kind": kind}}))
 
 
 def _name_taken(conn, name: str, lens_id: str | None = None) -> bool:
@@ -862,6 +868,13 @@ def lenses_page(conn, demo: bool = False) -> str:
                            f'{make}')
 
 
+def _in_by(member: dict) -> str:
+    """Why a card is in a lens, in words: my pin, or the query, with its score where it gave one."""
+    if member["why"] == "pin":
+        return "pinned in"
+    return "by its query" + ("" if member["score"] is None else f" at {member['score']:.2f}")
+
+
 def lens_page(conn, lens_id: str, page: int = 0, demo: bool = False) -> str | None:
     """/lens/<id>: a lens, its cards and why each is in (my pin or its query), how much of the map it has judged and
     where it's placed; outside demo mode, to keep it at hand, archive it, edit it, and pin a card out or unpin it.
@@ -874,7 +887,7 @@ def lens_page(conn, lens_id: str, page: int = 0, demo: bool = False) -> str | No
     x = found[0]
     cards = lens.members(conn, lens_id, demo)
     asked, of = lens.judged(conn, x, demo)
-    where = ", ".join(f'<a href="/{"tree" if d == "tree" else "grid"}">{_e(_place_name(d, p))} on the {d}</a>'
+    where = ", ".join(f'<a href="/{d}">{_e(_place_name(d, p))} on the {d}</a>'
                       for d, p in conn.execute("""SELECT b.drawing, p.place FROM pub.board_lenses p
                                                   JOIN pub.boards b USING (board_id) WHERE p.lens_id = %s
                                                   ORDER BY b.drawing, p.place""", (lens_id,)))
@@ -883,6 +896,10 @@ def lens_page(conn, lens_id: str, page: int = 0, demo: bool = False) -> str | No
             f'<small>{_e(lens.describe(x))} · {lens.STATES[x["state"]]} · judged {asked:,} of {of:,} · '
             f'{len(cards)} card{"s" * (len(cards) != 1)}</small>',
             f'<p><a href="/sky?lens={lens_id}">On the sky</a>' + (f" · {where}" if where else "") + "</p>"]
+    if x["kind"] == "jev":
+        body.append("<details><summary>its questions</summary><ol>" + "".join(
+            f"<li>{_e(q)}" + (f"<br><small>yes: {_e(c['true'])} · no: {_e(c['false'])}</small>" if c else "") + "</li>"
+            for q, c in x["query"]["deciding"].values()) + "</ol></details>")
     if not demo:
         states = "".join(f'<button name="state" value="{s}">{says}</button>'
                          for s, says in (("pinned", "keep at hand"), ("active", "make active"), ("archived", "archive"))
@@ -899,7 +916,7 @@ def lens_page(conn, lens_id: str, page: int = 0, demo: bool = False) -> str | No
     shown = cards[page * PAGE:(page + 1) * PAGE]
     body.append("<ol>" + "".join(
         f'<li><a href="/idea/{c["idea_id"]}">{_e(c["title"])}</a><p>{_e(c["statement"])}</p><small>{_e(_facts(c))} · '
-        f'{"pinned in" if c["why"] == "pin" else "by its query"}</small>'
+        f'{_in_by(c)}</small>'
         + unpick(c["idea_id"], "unpin" if c["why"] == "pin" else "pin_out", "unpin" if c["why"] == "pin" else "pin out")
         + "</li>" for c in shown) + "</ol>" if shown else "<p>No cards in it.</p>")
     if len(cards) > (page + 1) * PAGE:
@@ -922,7 +939,8 @@ def lens_act(conn, lens_id: str, form: dict, lists: dict) -> None:
     if action == "state" and form.get("state") in lens.STATES:
         lens.record(conn, "lens_state", {"lens_id": lens_id, "state": form["state"]})
     elif action == "edit":
-        payload = lens_payload(form, lists)
+        now = conn.execute("SELECT kind FROM pub.lenses WHERE lens_id = %s", (lens_id,)).fetchone()
+        payload = lens_payload(form, lists, now[0] if now else None)
         if _name_taken(conn, payload["name"], lens_id):
             raise ValueError("another lens has that name")
         lens.record(conn, "lens_edit", {"lens_id": lens_id} | payload)

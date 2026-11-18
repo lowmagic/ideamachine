@@ -58,7 +58,9 @@ uv run im merge --distinct A B    # mark two clusters as distinct points: im mer
 uv run im idea show ID           # a card (full id or unique prefix): its text, whether I corrected it, its quotes, and the text of the clusters merged into it
 uv run im idea edit ID --statement "..."   # correct a card's --title, --statement or --note; '' reverts to Claude's
 uv run im themes                  # themes; im themes pin|unpin|reject <name>, im themes rename <name> <new name>
-uv run im lens                    # the lenses (M5): each with its size, query, filters and state; im lens show <name> lists its cards and why each is in. They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page) or by feedback events
+uv run im lens                    # the lenses (M5): each with its size, query, filters and state; im lens show <name> lists its cards and why each is in (with Jev's score). They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page) or by feedback events
+uv run im lens import saved/lens-final/lenses.json --state pinned   # make or update lenses from a lenses.json (lens_audit's shape) as `jev` lenses, by name; sends nothing
+uv run im lens run <name>         # Jev answers a jev lens's questions about the cards it hasn't answered, the 300 nearest its description (--all: every card it admits; --limit N); `im run` goes on through the rest
 uv run im load-fixtures --scenario edited   # the same stream after every kind of correction and a forget
 uv run im run
 uv run im check                   # invariant queries
@@ -227,6 +229,9 @@ Then, outside that transaction:
   my review. Related-idea edges are rebuilt, except between clusters the connection judge has a verdict on. The web
   view reads the result through schema `pub`
   ([ROADMAP §3.5](ROADMAP.md)).
+- **Lenses.** Jev asks each `jev` lens not archived about the cards it admits and hasn't answered under its current
+  query for their current text, nearest its description first, at most `lens_run.PER_RUN` a lens; a card is in at
+  the lens's cut (`lens_run`, M5). Its stats are under `lenses`, by lens.
 - **Digest.** Claude writes the last completed week's digest (Monday to Monday) once every episode of that week
   has been read and its captures matched; until then the run leaves it, with `"waiting": true` in its stats, and a
   later run writes it.
@@ -262,7 +267,8 @@ a Jev question set, a cut, a method. When one changes, each stage that would sen
   answer. An episode re-derived with the same payload (a segmentation change) takes the earlier read's captures.
 
 The gated stages are extraction (`extract`), the themes filer (`themes`), sensitivity (`sensitivity`), the
-connection judge (`connect`) and the merge screen (`merges`). The matcher never asks about a capture twice whatever
+connection judge (`connect`), the merge screen (`merges`) and the lenses (`lenses`: another Jev model; my own edit of
+a lens's query isn't held, it's my request to ask again). The matcher never asks about a capture twice whatever
 its version, and the digest writes each week once, so neither has anything to hold.
 
 `im run`'s stats and `im pending` show, under `held` for each stage with held work, how many, from which version(s)

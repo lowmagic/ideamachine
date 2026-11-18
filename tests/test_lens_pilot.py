@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from im import egress, jev, lens_audit, llm
+from im import egress, jev, lens_audit, lens_run, llm
 
 from helpers import HashEmbedder, table
 from test_review import as_web_role
@@ -44,7 +44,7 @@ def folder(tmp_path):
 def test_each_card_is_asked_once_with_every_lens_that_admits_it(seeded_lattice, admin, folder):
     pipe = seeded_lattice
     client, sent = fake_jev()
-    cards = lens_audit.cards(pipe)
+    cards = lens_run.cards(pipe)
     mine = sum(c["by_me"] for c in cards)
     assert 0 < mine < len(cards)   # the fixture has cards I didn't say, which `mine` never asks about
 
@@ -76,7 +76,7 @@ def test_the_report_counts_each_lens_by_its_rule_and_cut(seeded_lattice, folder)
     pipe = seeded_lattice
     client, _ = fake_jev("garden")
     lens_audit.draft(pipe, client, folder)
-    cards = lens_audit.cards(pipe)
+    cards = lens_run.cards(pipe)
     garden = sum("garden" in json.dumps(c["item"]).lower() for c in cards)
     garden_mine = sum("garden" in json.dumps(c["item"]).lower() and c["by_me"] for c in cards)
     assert garden > 0
@@ -153,7 +153,7 @@ def copied(folder, to):
 def split(seeded_lattice, monkeypatch):
     """The fixture's cards split by title, since their ids, which the real split goes by, differ every run."""
     dev = {"Broken builds as signal", "A solitary unsatisfying grape.", "Something new"}
-    halves = {c["id"]: "dev" if c["item"]["title"] in dev else "held" for c in lens_audit.cards(seeded_lattice)}
+    halves = {c["id"]: "dev" if c["item"]["title"] in dev else "held" for c in lens_run.cards(seeded_lattice)}
     monkeypatch.setattr(lens_audit, "half", halves.__getitem__)
     return halves
 
@@ -166,7 +166,7 @@ def test_a_model_reviews_the_dev_half_once_per_description(seeded_lattice, split
     with pytest.raises(SystemExit, match="another model reviews them"):
         lens_audit.review(pipe, reviewer, HashEmbedder(), first, "jev-1.14.0")
     out = lens_audit.review(pipe, reviewer, HashEmbedder(), first, model, lens_ids=["coffee"])
-    cards = {c["id"]: c for c in lens_audit.cards(pipe)}
+    cards = {c["id"]: c for c in lens_run.cards(pipe)}
     shown = {lens_audit._shown(cards[i]["item"]): i for i in cards}
     assert {split[shown[t]] for t in reviewer.texts} == {"dev"} and out["asked"] == len(reviewer.texts)
 

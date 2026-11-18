@@ -504,13 +504,15 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
 - **Lens.** A stored question about clusters ([0013]): a lens query, lens filters and lens pins. A cluster is in a lens
   if it's pinned in, or it passes the query and the filters and isn't pinned out. A lens writes no connections, and
   never refers to another lens. Its members are cards, each with why it's in: `pin` or `query` (`pub.lens_members`,
-  069). **Status:** stored, kinds `all` and `none` (069); `jev` comes with its run.
+  069). **Status:** stored, kinds `all`, `none` (069) and `jev` (070).
 - **Lens query.** Whether a cluster fits a lens's meaning: a query of some kind, stored as its kind and parameters,
   that names the clusters worth asking and judges each in or out with a score and a reason. Kinds: `all` (no meaning
-  test), `none` (only the pins), and `jev` (a set of questions, a rule combining them, and its own cut). A long one
-  is built offline and imported ([0013]).
-- **Judged share.** How much of the map a lens's query has asked about so far ("judged 300 of 3,100"): a run can stop
-  at the clusters nearest the definition, and a cluster not yet asked isn't a no ([0013]).
+  test), `none` (only the pins), and `jev` (a set of Nouls, a rule combining them, `max` or `mean`, and its own cut;
+  Jev's answers kept in `im.lens_answers`, `lens_run`). A long one is built offline and imported (`im lens import`,
+  [0013]).
+- **Judged share.** How much of the map a lens's query has asked about so far ("judged 300 of 3,100",
+  `pub.lens_judged`): a run can stop at the clusters nearest the definition, and a cluster not yet asked isn't a no
+  ([0013]).
 - **Lens filter.** A condition on stored facts that narrows what a lens's query admits: sensitivity tags, maturity,
   kept status, recency, recurrence, arousal, who said it ([0013]). **Status:** maturity, kept status, said by me,
   sensitive, and when it was said (`im.lens_filters_ok`, 069).

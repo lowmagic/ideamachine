@@ -22,7 +22,9 @@ import json
 import uuid
 from collections import defaultdict
 
-KINDS = {"all": "every card the filters admit", "none": "only the cards I pin"}
+KINDS = {"all": "every card the filters admit", "none": "only the cards I pin",
+         "jev": "the cards Jev's answers put at or above its cut"}
+MADE_HERE = ("all", "none")   # a `jev` query is built offline and imported (lens_run.import_file, decision 0013)
 STATES = {"pinned": "kept at hand", "active": "active", "archived": "archived"}
 MATURITIES = ("observation", "candidate", "idea")
 KEPT = ("canonical", "pinned", "unkept")
@@ -57,7 +59,7 @@ def add(conn, name: str, description: str = "", kind: str = "all", filters: dict
 
 def stored(conn, demo: bool = False) -> list[dict]:
     """Every lens, those kept at hand first and the archived last, then by name, with how many cards it holds."""
-    cur = conn.execute(f"""SELECT l.lens_id::text AS id, l.name, l.description, l.kind, l.filters, l.state,
+    cur = conn.execute(f"""SELECT l.lens_id::text AS id, l.name, l.description, l.kind, l.query, l.filters, l.state,
                                   (SELECT count(*) FROM {_views(demo)}lens_members m WHERE m.lens_id = l.lens_id)
                                     AS cards
                            FROM pub.lenses l
@@ -94,17 +96,20 @@ def members(conn, lens_id: str, demo: bool = False, limit: int | None = None) ->
 
 
 def judged(conn, lens: dict, demo: bool = False) -> tuple[int, int]:
-    """How much of the map a lens's query has judged, and of how many cards: `all` and `none` ask nothing, so they've
-    judged every card."""
-    (n,) = conn.execute(f"SELECT count(*) FROM {_views(demo)}cards"
-                        + (" WHERE NOT redacted" if demo else "")).fetchone()
-    return n, n
+    """How much of the map a lens's query has judged, and of how many cards (pub.lens_judged): a `jev` lens the cards
+    it has answered under its current query; `all` and `none` ask nothing, so they've judged every card."""
+    return conn.execute("SELECT asked, cards FROM pub.lens_judged WHERE lens_id = %s", (lens["id"],)).fetchone()
 
 
 def describe(lens: dict) -> str:
     """The query and the filters, in words."""
     f = lens["filters"] or {}
     parts = [KINDS[lens["kind"]]]
+    if lens["kind"] == "jev":
+        q = lens["query"]
+        n = len(q["deciding"])
+        parts[0] = (f"Jev: {n} question{'s' * (n != 1)}, "
+                    + ("the likeliest" if q["rule"] == "max" else "their mean") + f" at {q['cut']} or above")
     if "maturity" in f:
         parts.append(" or ".join(f["maturity"]))
     if "kept_as" in f:
@@ -115,7 +120,7 @@ def describe(lens: dict) -> str:
         parts.append("sensitive" if f["sensitive"] else "not sensitive")
     if "said_since" in f or "said_until" in f:
         parts.append(f"said {f.get('said_since', '…')} to {f.get('said_until', '…')}")
-    return " · ".join(parts) if lens["kind"] == "all" else parts[0]
+    return " · ".join(parts) if lens["kind"] != "none" else parts[0]
 
 
 def places(conn, drawing: str) -> dict[str, dict]:

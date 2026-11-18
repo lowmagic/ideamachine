@@ -215,6 +215,19 @@ One PR each, in order:
      their order before the stand-in neighborhoods.
    - Members are cards (`pub.cards`); `all` and `none` judge every card, so their judged share is all of them.
 4. The `jev` kind and `im lens run`.
+   **Built:** migration 070 (`jev` queries in `im.lens_query_ok`, `im.lens_answers`, `pub.lens_members` with a `jev`
+   lens's cards at its cut, `pub.lens_judged`), `lens_run.py`, `im lens run | import`, the `lenses` stage of `im run`
+   and the re-read gate's `lenses`, `tests/test_lens_run.py`. Settled while building:
+   - **A `jev` query** is the shape lens_audit's pilots measured (deciding Nouls, `max` or `mean`, a cut), and Jev
+     sees each card as they showed it (`lens_run.cards`: title, statement, my note, first quotes), so a lens judged
+     there is imported as it was measured. `im lens import` takes that `lenses.json`: by name, `said_by_me` as a
+     filter, probes left behind.
+   - **What's asked:** the cards the filters admit, one request per lens and card, kept by query version and text.
+     `im lens run` stops at the 300 nearest the description (`lens_run.NEAREST`) unless `--all`; `im run` goes on
+     through the rest, 500 a lens (`lens_run.PER_RUN`), so a lens keeps up with new and changed cards.
+   - **The gate:** my edit of a query asks everything again; another Jev model with the same query and text is held
+     until `im reread lenses`, its answers standing.
+   - A `jev` lens is made by import, not in the web view, whose form keeps its questions when I edit the rest.
 5. Themes become lenses.
 6. The canonical lenses, judged under bars registered in im-evals first.
 

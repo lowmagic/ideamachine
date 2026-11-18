@@ -13,7 +13,7 @@ from collections.abc import Callable, Iterable
 
 from im import llm
 
-STAGES = ("extract", "themes", "sensitivity", "connect", "merges")
+STAGES = ("extract", "themes", "sensitivity", "connect", "merges", "lenses")
 
 
 def estimate(conn, egress_ids: Iterable[int], to_model: Callable[[str], str]) -> tuple[float, str]:
