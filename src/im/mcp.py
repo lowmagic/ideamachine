@@ -383,11 +383,10 @@ def whats_new(conn, since: str | None = None) -> dict:
         start = datetime.now(timezone.utc) - timedelta(days=7)
     ideas = conn.execute(f"SELECT {BRIEF} FROM pub.ideas WHERE created_at >= %s ORDER BY created_at DESC LIMIT 100",
                          (start,)).fetchall()
-    themes = [n for (n,) in conn.execute(
-        "SELECT name FROM pub.themes WHERE origin = 'clustered' AND NOT pinned ORDER BY name")]
     total = conn.execute("SELECT count(*) FROM pub.ideas WHERE created_at >= %s", (start,)).fetchone()[0]
+    # Themes are lenses now (M5), and nothing proposes them: the contract's list stays, empty.
     return {"since": start.isoformat(), "new_ideas_total": total, "new_ideas": [_brief(r) for r in ideas],
-            "proposed_themes": themes, "proposals_waiting": len(_proposals(conn))}
+            "proposed_themes": [], "proposals_waiting": len(_proposals(conn))}
 
 
 def weekly_digest(conn, week: str | None = None) -> dict:
@@ -570,12 +569,13 @@ TOOLS = {
                    "within one theme. Idea Machine doesn't rate ideas, so nothing here is a score.",
                    {"limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
                     "theme": {"type": "string", "description": "A theme's exact name"}}, []),
-    "list_themes": (list_themes, True, "Every theme with its size and whether it's pinned or only proposed.", {}, []),
+    "list_themes": (list_themes, True, "Every theme (each one of the owner's lenses) with its size and whether it's "
+                    "pinned.", {}, []),
     "open_theme": (open_theme, True, "The ideas in one theme, starred and best-evidenced first.",
                    {"theme": {"type": "string", "description": "A theme's name (or part of it) or id"}}, ["theme"]),
     "whats_new": (whats_new, True, "What's new in the owner's Idea Machine: ideas added since a date (default: the "
-                  "last 7 days), proposed themes waiting for a decision, and how many proposals wait for the owner's "
-                  "call.", {"since": {"type": "string", "description": "ISO date or time"}}, []),
+                  "last 7 days), and how many proposals wait for the owner's call.",
+                  {"since": {"type": "string", "description": "ISO date or time"}}, []),
     "weekly_digest": (weekly_digest, True, "Idea Machine's weekly digest of the owner's lattice: a summary and "
                       "points (what kept coming up, what converges, sleepers, projects forming, what a stranger would "
                       "value), each with the ideas it rests on. The latest week, or the one holding a date. Its text "
@@ -593,12 +593,13 @@ TOOLS = {
                         "idea_ids": {"type": "array", "items": ID, "maxItems": MAX_DRAFT_IDEAS}}, []),
     "rename_theme": (rename_theme, False, "Rename one of the owner's themes. Only once they've agreed to the name.",
                      {"theme": THEME, "name": {"type": "string", "maxLength": 80}}, ["theme", "name"]),
-    "merge_themes": (merge_themes, False, "Merge a theme into another: its ideas join `into`, and it goes away. "
-                     "`into` keeps its name. Only once the owner has agreed; it can't be undone with one call.",
+    "merge_themes": (merge_themes, False, "Merge a theme into another: the ideas the owner pinned into it join "
+                     "`into`, and it's archived. `into` keeps its name. Only once the owner has agreed; it can't be "
+                     "undone with one call.",
                      {"theme": THEME, "into": THEME}, ["theme", "into"]),
-    "split_theme": (split_theme, False, "Split some ideas out of a theme into a new theme of the owner's (pinned; "
-                    "Idea Machine writes its description on its next run). open_theme first for the idea ids. Only "
-                    "once the owner has agreed to the name and the ideas.",
+    "split_theme": (split_theme, False, "Split some ideas out of a theme into a new theme of the owner's (pinned; the "
+                    "ideas pinned into it and out of the old one). open_theme first for the idea ids. Only once the "
+                    "owner has agreed to the name and the ideas.",
                     {"theme": THEME, "name": {"type": "string", "maxLength": 80},
                      "idea_ids": {"type": "array", "items": ID, "minItems": 1, "maxItems": 500}},
                     ["theme", "name", "idea_ids"]),

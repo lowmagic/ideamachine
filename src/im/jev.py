@@ -308,10 +308,8 @@ def question_set(client: Jev | None, question: str) -> str:
     """The version of `question`'s deciding questions as this client asks them: their wording and the model. What
     a request is logged under, and its kept answers filed under. No client: as Jev at MODEL asks them, so kept
     answers can be read without a key."""
-    from im import themes
-
-    return themes.version(json.dumps(_nouls(QUESTIONS[question]), sort_keys=True), {},
-                          client.model if client else MODEL, "")
+    return llm.version(json.dumps(_nouls(QUESTIONS[question]), sort_keys=True), {},
+                       client.model if client else MODEL, "")
 
 
 def kept(conn, qs: str) -> dict[str, dict[str, float]]:

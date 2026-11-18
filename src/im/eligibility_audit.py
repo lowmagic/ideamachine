@@ -26,7 +26,7 @@ import random
 import re
 from pathlib import Path
 
-from im import egress, extract, llm, themes
+from im import egress, extract, llm
 from im.capture_checks import lines_of
 
 SIZE = 100
@@ -275,7 +275,7 @@ def draft(conn, client, folder: Path, model: str, effort: str = "low", monthly_c
     got = json.loads(path.read_text()) if path.exists() else {
         "rubric": rubric(), "model": model, "effort": effort, "items": {}, "changed": []}
     _same_rubric(got.get("rubric"), str(path))
-    pv = themes.version(DRAFT_SYSTEM, DRAFT_SCHEMA, model, effort)
+    pv = llm.version(DRAFT_SYSTEM, DRAFT_SCHEMA, model, effort)
     if got.setdefault("prompt_version", pv) != pv:
         raise SystemExit(f"{path} was drafted under prompt {got['prompt_version']}, not {pv}: a draft isn't resumed "
                          "under another prompt")

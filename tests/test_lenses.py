@@ -50,7 +50,7 @@ def test_a_lens_is_made_edited_and_set_aside_by_my_events(seeded_lattice, admin)
     send(admin, "lens_state", {"lens_id": str(lens), "state": "archived"})
     send(admin, "lens_state", {"lens_id": str(uuid.uuid4()), "state": "pinned"})
     assert results(pipe) == ["added", "repeat", "name taken", "edited", "archived", "no such lens"]
-    assert as_web_role(admin, "SELECT name, description, kind, state FROM pub.lenses") == \
+    assert as_web_role(admin, "SELECT name, description, kind, state FROM pub.lenses WHERE lens_id = %s", lens) == \
         [("Signals and noise", "What a signal says", "none", "archived")]
 
     for bad in ({"lens_id": str(uuid.uuid4()), "name": "x", "query": {"kind": "vibes"}},
@@ -92,7 +92,9 @@ def test_the_filters_admit_and_my_pins_beat_them(seeded_lattice, admin):
     seeded = table(pipe, """SELECT d.idea_id FROM im.ideas d WHERE d.origin = 'mine'
                             AND NOT EXISTS (SELECT 1 FROM im.idea_evidence ev WHERE ev.idea_id = d.idea_id)""")[0][0]
     send(admin, "lens_pin", {"lens_id": str(pinned), "pin": "in"}, seeded)   # no speech, nothing typed, nothing read
-    assert results(pipe)[-1] == "nothing to anchor to"
+    assert results(pipe)[-1] == "pinned in"
+    assert table(pipe, "SELECT source_ref FROM im.lens_pins WHERE lens_id = %s AND segment_ids = '{}'", pinned) == \
+        [(f"idea:{seeded}",)]   # anchored to its own id
 
 
 def test_a_pin_follows_its_speech_through_a_merge_and_a_typed_idea_by_what_i_typed(seeded_lattice, admin):
@@ -108,7 +110,8 @@ def test_a_pin_follows_its_speech_through_a_merge_and_a_typed_idea_by_what_i_typ
                 typed, json.dumps({"title": "Calm is a signal", "statement": "Others read your calm."}))
     send(admin, "lens_pin", {"lens_id": str(pinned), "pin": "in"}, typed)
     assert ("Calm is a signal", "pin") in members(admin, pinned)
-    assert table(pipe, "SELECT source_ref LIKE 'idea_add:%%' FROM im.lens_pins WHERE segment_ids = '{}'") == [(True,)]
+    assert table(pipe, """SELECT source_ref LIKE 'idea_add:%%' FROM im.lens_pins
+                          WHERE segment_ids = '{}' AND lens_id = %s""", pinned) == [(True,)]
 
 
 def test_forgetting_the_pinned_speech_forgets_the_pin(seeded_lattice, admin, cfg, stream):
@@ -116,13 +119,13 @@ def test_forgetting_the_pinned_speech_forgets_the_pin(seeded_lattice, admin, cfg
     pinned = add(admin, "By hand", kind="none")
     lora = card(pipe, "Something new")
     send(admin, "lens_pin", {"lens_id": str(pinned), "pin": "in"}, lora)
-    assert table(pipe, "SELECT count(*) FROM im.lens_pins") == [(1,)]
+    assert table(pipe, "SELECT count(*) FROM im.lens_pins WHERE lens_id = %s", pinned) == [(1,)]
     stream.forget(3600, 3612)   # the LoRa idea's line
     stream.write(stream.dir)
     run(pipe, cfg, stream)
-    assert table(pipe, "SELECT count(*) FROM im.lens_pins") == [(0,)]
+    assert table(pipe, "SELECT count(*) FROM im.lens_pins WHERE lens_id = %s", pinned) == [(0,)]
     assert table(pipe, checks.TOMBSTONED) == []
-    assert table(pipe, "SELECT count(*) FROM im.lenses") == [(1,)]   # the lens is mine, not made from speech
+    assert table(pipe, "SELECT name FROM im.lenses WHERE lens_id = %s", pinned) == [("By hand",)]   # mine, not speech's
 
 
 def test_demo_mode_leaves_a_hidden_card_out_of_every_lens(seeded_lattice, admin):

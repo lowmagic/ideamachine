@@ -68,7 +68,6 @@ def _run_stages(conn, cfg) -> dict:
         stats["observations"] = observations.assign_stage(conn)
         if cfg.lattice.enabled:
             stats["lattice"] = _lattice(conn, cfg)
-            stats["themes"] = _themes(conn, cfg)
             stats["sensitivity"] = _sensitivity(conn, cfg)
             stats["lenses"] = _lenses(conn, cfg)
             stats["digest"] = _digest(conn, cfg)
@@ -117,26 +116,8 @@ def _lattice(conn, cfg) -> dict:
         return {"stopped": f"Claude unavailable: {e}"}
 
 
-def _themes(conn, cfg) -> dict:
-    """Apply my theme feedback, file unthemed ideas, propose themes for the leftovers."""
-    import anthropic
-
-    from im import llm, themes
-
-    out = {"feedback": themes.apply_feedback(conn)}
-    try:
-        client = llm.client_for(cfg.themes.model, cfg.egress.zdr)
-        # Described first: the filer reads the descriptions.
-        out["describe"] = themes.describe_stage(conn, client, cfg.extract.monthly_cap_usd, cfg.themes)
-        out["file"] = themes.file_stage(conn, client, cfg.extract.monthly_cap_usd, cfg.themes)
-        out["propose"] = themes.propose_stage(conn, client, cfg.extract.monthly_cap_usd, cfg.themes)
-    except (anthropic.AnthropicError, SystemExit) as e:
-        out["stopped"] = f"Claude unavailable: {e}"
-    return out
-
-
 def _sensitivity(conn, cfg) -> dict:
-    """Tag ideas and themes for demo mode, or say why it couldn't; the run goes on either way."""
+    """Tag ideas and lenses for demo mode, or say why it couldn't; the run goes on either way."""
     from im import jev, sensitivity
 
     try:
@@ -212,23 +193,6 @@ def cmd_digest(args) -> None:
         print(digest.show(conn, week))
 
 
-def cmd_themes(args) -> None:
-    from im import themes
-
-    with db.connect(db.pipeline_dsn()) as conn:
-        if args.action != "list":
-            try:
-                theme_id = themes.find(conn, args.theme)
-            except ValueError as e:
-                raise SystemExit(str(e)) from None
-            kind = {"pin": "pin_theme", "unpin": "unpin_theme", "rename": "rename_theme", "reject": "reject_theme"}
-            if args.action == "rename" and not args.name:
-                raise SystemExit("rename needs the new name")
-            themes.record(conn, kind[args.action], theme_id, {"name": args.name} if args.action == "rename" else None)
-            print(themes.apply_feedback(conn))
-        print(themes.listing(conn))
-
-
 def cmd_lens(args) -> None:
     """The lenses (decision 0013): every one with its size; one with its cards and why each is in; a `jev` lens run
     (Jev asked about the cards it hasn't answered); lenses imported from a lenses.json."""
@@ -277,7 +241,7 @@ def cmd_pending(args) -> None:
     """What the next run would send, without sending anything, and what the re-read gate holds, per stage. After
     moving the database to another machine, `already_extracted_would_resend` must be 0: anything else means the
     payloads changed (e.g. the time zone), and the run would re-send episodes and orphan my verdicts."""
-    from im import extract, lattice, themes
+    from im import extract, lattice
 
     cfg = config.load()
     with db.connect(db.pipeline_dsn()) as conn:
@@ -296,10 +260,9 @@ def cmd_pending(args) -> None:
             (ids, cfg.extract.model)).fetchone()
         out = {"prompt_version": pv, "episodes_to_extract": len(todo), "already_extracted_would_resend": resend,
                "their_last_reads_cost_usd": round(float(last_read or 0), 2),
-               "items_to_match": len(lattice._pending_items(conn)),
-               "ideas_to_file": len(themes._unthemed(conn, cfg.themes)[0])}
+               "items_to_match": len(lattice._pending_items(conn))}
         reports = {"extract": extract.held_report(conn, held, cfg.extract.model, pv)} | {
-            stage: _held(conn, cfg, stage) for stage in ("themes", "sensitivity", "connect", "merges", "lenses")}
+            stage: _held(conn, cfg, stage) for stage in ("sensitivity", "connect", "merges", "lenses")}
         out["held"] = {stage: r for stage, r in reports.items() if r}
     _print(out)
     if args.expect_none_resent and out["already_extracted_would_resend"]:
@@ -308,14 +271,12 @@ def cmd_pending(args) -> None:
 
 def _held(conn, cfg, stage: str) -> dict | None:
     """What the re-read gate holds in `stage` (reread.report, or None), sending and writing nothing."""
-    from im import connect, extract, lens_run, merge, sensitivity, themes
+    from im import connect, extract, lens_run, merge, sensitivity
 
     if stage == "extract":
         x = cfg.extract
         pv = extract.prompt_version(x.model, x.effort, extract.PROMPTS[x.prompt])
         return extract.held_report(conn, extract._pending(conn, x.model, pv)[1], x.model, pv)
-    if stage == "themes":
-        return themes.held(conn, cfg.themes)
     if stage == "sensitivity":
         return sensitivity.held(conn)
     if stage == "connect":
@@ -338,7 +299,7 @@ def cmd_reread(args) -> None:
 
 def _reread(conn, cfg, stage: str, limit: int | None) -> dict:
     """Run `stage` on its held work only, at most `limit` items (None: all)."""
-    from im import connect, extract, jev, lens_run, llm, merge, sensitivity, themes
+    from im import connect, extract, jev, lens_run, llm, merge, sensitivity
     from im.lattice import SentenceEmbedder
 
     cap = cfg.extract.monthly_cap_usd
@@ -348,9 +309,6 @@ def _reread(conn, cfg, stage: str, limit: int | None) -> dict:
             raise SystemExit(f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}")
         return extract.run_stage(conn, llm.client_for(x.model, cfg.egress.zdr), x.model, x.effort, cap, limit,
                                  extract.PROMPTS[x.prompt], x.max_tokens, held_only=True)
-    if stage == "themes":
-        return themes.file_stage(conn, llm.client_for(cfg.themes.model, cfg.egress.zdr), cap, cfg.themes,
-                                 held_only=True, limit=limit)
     if stage == "sensitivity":
         return sensitivity.tag_stage(conn, jev.Jev(), cap, limit, held_only=True)
     if stage == "connect":
@@ -1099,11 +1057,6 @@ def main(argv=None) -> None:
     ied.add_argument("--statement", help="at most 1000 characters")
     ied.add_argument("--note", help="my note, at most 1000 characters")
     ie.set_defaults(func=cmd_idea)
-    th = sub.add_parser("themes", help="list themes; pin, unpin, rename or reject one")
-    th.add_argument("action", nargs="?", default="list", choices=["list", "pin", "unpin", "rename", "reject"])
-    th.add_argument("theme", nargs="?", help="theme name (or its start), or id prefix")
-    th.add_argument("name", nargs="?", help="the new name, for rename")
-    th.set_defaults(func=cmd_themes)
     ln = sub.add_parser("lens", help="the lenses: list them; show one with its cards and why each is in; run a jev "
                         "lens (sends to Jev); import lenses from a lenses.json")
     ln.add_argument("action", nargs="?", default="list", choices=["list", "show", "run", "import"])

@@ -229,6 +229,21 @@ One PR each, in order:
      until `im reread lenses`, its answers standing.
    - A `jev` lens is made by import, not in the web view, whose form keeps its questions when I edit the rest.
 5. Themes become lenses.
+   **Built:** migration 071 (theme events applied to lenses, `im.lens_sensitivity`, `pub.themes` and
+   `pub.ideas.themes` over the lenses, the theme tables dropped), `themes.py` and `im themes` gone with the `[themes]`
+   config, the sensitivity stage tagging lenses, `tests/test_themes.py` rewritten over lenses. Settled while
+   building:
+   - **Listed as themes:** every lens not archived. An archived lens is one I set aside or merged away, so it isn't
+     a theme any more, and isn't tagged for demo mode.
+   - **The events:** `pin_theme` and `unpin_theme` set the lens's state (`pinned`, `active`); `rename_theme` renames
+     it; `merge_theme` copies its pins into the other lens (that lens's own pin wins) and archives it; `split_theme`
+     makes a pinned `none` lens under the sender's id, with the ideas given pinned in there and out of the source;
+     `file_idea` and `unfile_idea` pin the idea in or out. `reject_theme` applies to nothing, since nothing proposes
+     themes, and `whats_new` lists no proposed themes.
+   - **A theme migrated** (none live, but any there would be) is a `none` lens under its id, kept at hand if it was
+     pinned, its members pinned in. It has no questions, so it can't be a `jev` lens until I import one.
+   - **A pin's last anchor** is the cluster's own id (`idea:<id>`), for a cluster with no speech, nothing typed and
+     no archive capture: one inserted by hand, as the test fixtures' are. A merge follows it; a rebuild doesn't.
 6. The canonical lenses, judged under bars registered in im-evals first.
 
 ## The canonical lenses

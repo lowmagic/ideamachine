@@ -3,7 +3,8 @@
 Each item_keep / item_discard / item_star event becomes a row in im.item_verdicts (the same table `im ideas
 --review` writes), with the event's note. Applied events are recorded in im.feedback_applied, so each applies once.
 An event that repeats the item's latest verdict and note adds nothing (a resend, e.g. from an offline queue).
-Theme events are applied by im.themes; idea stars are read straight from the events by pub.ideas.
+Theme and lens events are applied by their triggers (migrations 069, 071); idea stars are read straight from the
+events by pub.ideas.
 
 Verdicts are carried forward too (`carry_verdicts`): when the episode an item was on is replaced, and Claude
 captures the same speech again, my verdicts are copied to the new item instead of asking me again.

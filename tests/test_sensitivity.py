@@ -1,14 +1,18 @@
-"""Sensitivity tags: Jev's yes or no per tag on each idea and theme; my own marks win, at once."""
+"""Sensitivity tags: Jev's yes or no per tag on each idea and lens (a theme); my own marks win, at once."""
 
 import json
 
 import psycopg
 import pytest
 
-from im import jev, sensitivity, themes
+from im import jev, sensitivity
 
 from helpers import table
 from test_review import as_web_role
+
+
+def lens(conn, name):
+    return table(conn, "SELECT lens_id FROM im.lenses WHERE name = %s", name)[0][0]
 
 
 def tagger(word="coffee", broken=0):
@@ -34,7 +38,7 @@ def shown(admin):
 def test_jev_tags_once_and_again_when_the_text_changes(seeded_lattice, admin):
     pipe = seeded_lattice
     client, sent = tagger()
-    n = table(pipe, "SELECT (SELECT count(*) FROM pub.ideas) + (SELECT count(*) FROM im.themes)")[0][0]
+    n = table(pipe, "SELECT (SELECT count(*) FROM pub.ideas) + (SELECT count(*) FROM im.lenses)")[0][0]
     stats = sensitivity.tag_stage(pipe, client)
     assert stats["pending"] == stats["tagged"] == len(sent) == n and stats["sensitive"] == 1
     assert set(sent[0]["questions"]) == set(sensitivity.TAGS)
@@ -54,7 +58,7 @@ def test_my_marks_win_at_once_either_way(seeded_lattice, admin):
     pipe = seeded_lattice
     sensitivity.tag_stage(pipe, tagger()[0])
     coffee = table(pipe, "SELECT idea_id FROM pub.ideas WHERE statement LIKE '%%coffee%%'")[0][0]
-    jokes = themes.find(pipe, "jokes")
+    jokes = lens(pipe, "Jokes")
     mark = "INSERT INTO pub.feedback_events (kind, idea_id, theme_id, payload) VALUES (%s, %s, %s, %s)"
     as_web_role(admin, mark, "idea_sensitive", coffee, None, json.dumps({"sensitive": False}))
     as_web_role(admin, mark, "theme_sensitive", None, jokes, json.dumps({"sensitive": True}))
@@ -66,17 +70,16 @@ def test_my_marks_win_at_once_either_way(seeded_lattice, admin):
                                        ("theme_sensitive", None, None, {"sensitive": True})]:
         with pytest.raises(psycopg.errors.CheckViolation):
             as_web_role(admin, mark, kind, idea, theme, json.dumps(payload))
-    themes.record(pipe, "reject_theme", jokes)   # not a proposal: stays; a merge would leave the mark harmless
-    other = themes.find(pipe, "models")
+    other = lens(pipe, "Models and signals")
     as_web_role(admin, "INSERT INTO pub.feedback_events (kind, theme_id, payload) VALUES ('merge_theme', %s, %s)",
                jokes, json.dumps({"into": str(other)}))
-    assert ("theme", str(jokes)) not in shown(admin)   # the theme is gone; its old mark stays as history
+    assert ("theme", str(jokes)) not in shown(admin)   # merged away, archived; its old mark stays as history
 
 
 def test_my_latest_mark_is_what_demo_mode_hides(seeded_lattice, admin):
     pipe = seeded_lattice
     coffee = table(pipe, "SELECT idea_id FROM pub.ideas WHERE statement LIKE '%%coffee%%'")[0][0]
-    jokes = themes.find(pipe, "jokes")
+    jokes = lens(pipe, "Jokes")
     mark = "INSERT INTO pub.feedback_events (kind, idea_id, theme_id, payload) VALUES (%s, %s, %s, %s)"
     for sensitive in (True, False, True, False):   # I change my mind, and back, and again
         as_web_role(admin, mark, "idea_sensitive", coffee, None, json.dumps({"sensitive": sensitive}))

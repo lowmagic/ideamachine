@@ -57,8 +57,7 @@ uv run im merge KEEP OTHER        # merge cluster OTHER into KEEP (full ids): it
 uv run im merge --distinct A B    # mark two clusters as distinct points: im merges stops listing them
 uv run im idea show ID           # a card (full id or unique prefix): its text, whether I corrected it, its quotes, and the text of the clusters merged into it
 uv run im idea edit ID --statement "..."   # correct a card's --title, --statement or --note; '' reverts to Claude's
-uv run im themes                  # themes; im themes pin|unpin|reject <name>, im themes rename <name> <new name>
-uv run im lens                    # the lenses (M5): each with its size, query, filters and state; im lens show <name> lists its cards and why each is in (with Jev's score). They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page) or by feedback events
+uv run im lens                    # the lenses (M5), which are the themes too: each with its size, query, filters and state; im lens show <name> lists its cards and why each is in (with Jev's score). They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page), by the theme tools over MCP, or by feedback events
 uv run im lens import saved/lens-final/lenses.json --state pinned   # make or update lenses from a lenses.json (lens_audit's shape) as `jev` lenses, by name; sends nothing
 uv run im lens run <name>         # Jev answers a jev lens's questions about the cards it hasn't answered, the 300 nearest its description (--all: every card it admits; --limit N); `im run` goes on through the rest
 uv run im load-fixtures --scenario edited   # the same stream after every kind of correction and a forget
@@ -104,7 +103,6 @@ Every stage that asks a chat model takes its model and effort from the file:
 |---|---|---|---|
 | `[extract]` | extraction (also `prompt`, default and only live one `v5.3`; `monthly_cap_usd`, `max_episodes_per_run`) | `claude-opus-5-5` | `medium` |
 | `[match]` | the lattice's matcher | `claude-opus-5-5` | `low` |
-| `[themes]` | describing, filing and proposing themes | `claude-opus-5-5` | `low` |
 | `[digest]` | the weekly digest | `claude-opus-5-5` | `low` |
 | `[connect]` | the connection judge (each `im run`, and `im connect`; also `max_pairs_per_run`) | `openai/gpt-6.1-terra` | `low` |
 
@@ -112,7 +110,7 @@ Both go into the stage's version. A version change never sends again by itself w
 gate (below) holds it. Try a new extraction prompt first with `im trial`. The matcher and the digest use a new one
 from then on; what they've already done stays.
 
-The sensitivity tags have no section: Jev (`jev.MODEL`) answers one yes or no per tag about every idea and theme,
+The sensitivity tags have no section: Jev (`jev.MODEL`) answers one yes or no per tag about every idea and lens,
 and asks again when its text changes; a change of the questions or the cut (`sensitivity.CUT`) is held by the gate.
 
 `im run` and `im connect` judge pairs of clusters (SPEC §5). The judge nominates every two cards at cosine ≥ 0.65
@@ -243,12 +241,12 @@ Then, outside that transaction:
   candidates a week, the most recently said first, are proposed to me to keep as canonical or pinned. `im tune knob=value ...` previews a change to
   those settings, writing nothing, and prints the `[weight]` block to paste.
 
-Every stage that asks a model (extraction, matching, themes, sensitivity, the digest, the connection judge) stops,
+Every stage that asks a model (extraction, matching, sensitivity, the lenses, the digest, the connection judge) stops,
 saying why in its stats, when the month's spend reaches `extract.monthly_cap_usd`, when the API can't answer now, or
 when no request would get through (the credentials or the account's credit rejected, a model id that doesn't exist);
 the stages after it still run. A request whose reply fails (an error response, no answer, one cut off or not in the
 schema) is logged in `im.egress_log` with what it cost, counted in the stage's
-`failed`, and asked again on the next run; the stage goes on to its next item. A refused filing, scoring or
+`failed`, and asked again on the next run; the stage goes on to its next item. A refused scoring or
 tagging batch is skipped the same way and asked again, rather than recorded or stopping the batches after it; a
 refused extraction is recorded as read, with nothing captured, and a refused match makes a new idea.
 
@@ -259,14 +257,14 @@ stage's answer depends on besides its input: a prompt's wording or schema, the m
 a Jev question set, a cut, a method. When one changes, each stage that would send old work again splits what's due:
 
 - **New work** (never done under any version) and **work whose own input changed** (an episode whose payload
-  changed, say re-transcribed or tapped; a card whose text changed; an idea checked against another set of themes)
+  changed, say re-transcribed or tapped; a card whose text changed; a lens whose query I edited)
   go ahead under the current version, as before.
 - **Version re-sends** (done before under another version, input unchanged) are **held**. Their old results stay
   live: an episode read under an earlier prompt keeps its captures, and everything downstream reads captures of any
-  version side by side; a held pair keeps its verdict, an idea its tags or its "fits no theme", a merge pair its
+  version side by side; a held pair keeps its verdict, an idea its tags, a lens's card its answer, a merge pair its
   answer. An episode re-derived with the same payload (a segmentation change) takes the earlier read's captures.
 
-The gated stages are extraction (`extract`), the themes filer (`themes`), sensitivity (`sensitivity`), the
+The gated stages are extraction (`extract`), sensitivity (`sensitivity`), the
 connection judge (`connect`), the merge screen (`merges`) and the lenses (`lenses`: another Jev model; my own edit of
 a lens's query isn't held, it's my request to ask again). The matcher never asks about a capture twice whatever
 its version, and the digest writes each week once, so neither has anything to hold.

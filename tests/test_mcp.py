@@ -231,7 +231,7 @@ def test_demo_mode_is_one_setting_for_mcp_too(app, seeded_lattice, admin):
 def test_open_lens_shows_a_lens_by_any_part_of_its_name_with_why_each_idea_is_in(app, seeded_lattice, admin):
     from im import lens
 
-    assert "none yet" in app("open_lens", lens="Signals")["content"][0]["text"]
+    assert "no lens; the lenses: Jokes, Models and signals" in app("open_lens", lens="coffee")["content"][0]["text"]
     made = as_app_conn(admin, lambda c: lens.add(c, "Everything I said", kind="all", filters={"said_by_me": True}))
     coffee = idea_of(seeded_lattice, "coffee")
     as_app_conn(admin, lambda c: lens.record(c, "lens_pin", {"lens_id": made, "pin": "in"}, coffee))

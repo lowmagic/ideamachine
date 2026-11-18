@@ -205,10 +205,6 @@ if [ ! -f "$NAS_CONFIG/im/im.toml" ]; then
 # model = "claude-opus-5-5"
 # effort = "low"
 
-[themes]
-# model = "claude-opus-5-5"
-# effort = "low"
-
 [sensitivity]
 # model = "claude-opus-5-5"
 # effort = "low"

@@ -540,10 +540,10 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   compute it) and the graph version it read ([0010]:47-49). What a graph version is, is **not yet specified**.
 - **Subject.** What something is about. A shared subject is what a lens gathers, and is no connection ([0010]
   §Context; `edge_audit.HEADER`, `none`).
-- **Theme.** A stored category of clusters: `im.themes(name, description, origin, pinned)`, with membership in
-  `im.idea_themes` (008:65-80). Its provenance is `clustered` (proposed by Claude) or `mine`; the seeded archive's
-  `archive` went with it (058). Theme events edit it (024). **Status:** to become a lens: its name and description
-  the query, my filing corrections its pins ([0013]).
+- **Theme.** A lens not archived, as the theme tools and `pub.themes` list it (071): its name, description, whether
+  it's pinned, and how many shown cards it holds; an idea's themes (`pub.ideas.themes`) are the lenses it's in. Theme
+  events (024) shape lenses: a merge archives the lens merged away, a split makes a `none` lens, filing pins an idea
+  in. Until 071 it was its own table, `im.themes`, filed into by Claude and proposed from clusters ([0013]).
 - **Lattice.** The legacy app, in its own repo, that read `pub`: the map, review and the first MCP server ([0005]).
   **Status:** feature-frozen at `v1`, removed from the deploy 2026-11-11 with its MCP server, archived at M6.
 - **Trellis.** The stable family of views, each drawing one board: lenses arranged by hand. Called Lattice v2 in
@@ -588,8 +588,8 @@ Each role decides one thing. The model behind it can change, so models are liste
 | Connection-kind judge | the connection kinds on a connection | the connection judge's label, one kind at most |
 | Tension judge | whether a pair is in tension, as a proposal | Jev, `pulls4` |
 | Embedder | embeddings for neighbors, positions, lens search | `BAAI/bge-small-en-v1.5`, local |
-| Sensitivity tagger | the eight sensitivity tags on each idea and theme | Jev, at `sensitivity.CUT` per tag |
-| Theme filer, digest writer | as named | `[themes]`, `[digest]`; default Opus (`config.ModelConfig`) |
+| Sensitivity tagger | the eight sensitivity tags on each idea and lens | Jev, at `sensitivity.CUT` per tag |
+| Digest writer | as named | `[digest]`; default Opus (`config.ModelConfig`) |
 
 - **Opus, Sonnet, Haiku.** Anthropic's `claude-opus-5-5`, `claude-sonnet-5-5` and `claude-haiku-5-5` (`llm.PRICES`). A
   refusal falls back to `claude-opus-4-8` ([0004]).
@@ -769,7 +769,8 @@ that views give every stored connection (owner's decision, 2026-11-07).
 
 ### theme, topic, subject
 
-- A theme is an `im.themes` row (008:65-73). A capture's `themes` field is capture tags (007:35).
+- A theme is a lens not archived, listed as a theme (071; until then an `im.themes` row). A capture's `themes` field
+  is capture tags (007:35).
 - "Subject" is what a lens gathers ([0010] §Context), and Jev's `different_subjects`.
 - "Topic" has no definition. In use it means subject, measured by embedding similarity (`analogy_spike`,
   `probe_audit`), and it's also a prefix a gist shouldn't open with (`extract.SYSTEM_V5_3`).
@@ -874,8 +875,9 @@ collection is "the graph".
 - Cluster provenance: `im.ideas.origin` (008:10).
 - Membership provenance: `idea_evidence.relation` `origin`, the founding capture (008:16-20). Edge observation
   citations cite "origin observations" (`citations.py`).
-- Theme provenance (`themes.origin`) and theme-membership provenance (`idea_themes.origin`: `archive`, `assigned`,
-  `proposed` or `mine`, with no CHECK, 008:78).
+- Theme provenance (`pub.themes.origin`, now always `mine`). Theme-membership provenance (`idea_themes.origin`:
+  `archive`, `assigned`, `proposed` or `mine`, 008:78) went with the table (071): a lens's member is in by my pin or
+  by its query (`pub.lens_members.why`).
 
 **Use:** cluster provenance, membership provenance, theme provenance. The capture or observation a cluster was made
 from is its founding capture or founding observation; "first" is ambiguous.

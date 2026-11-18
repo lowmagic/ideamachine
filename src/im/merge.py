@@ -14,9 +14,10 @@ merge could be undone.
 - Merge review: a row whose clusters are now all one is resolved by this merge (`merge_id`).
 - How I kept OTHER, or my mark that it's sensitive, carries to KEEP as a feedback event (source MERGED) when KEEP had
   neither.
-- OTHER's derived rows go: embedding, position, weights, sensitivity tags, theme check, an open proposal. Its theme
-  memberships move to KEEP, unless I unfiled KEEP from that theme. KEEP's weight is recomputed by the next run, its
-  sensitivity tags when its text as tagged (with its first quotes) changed, and its edges' citations now.
+- OTHER's derived rows go: embedding, position, weights, sensitivity tags, an open proposal. My lens pins on it hold
+  for KEEP by themselves: they're anchored to its speech and follow the merge (migration 069). KEEP's weight is
+  recomputed by the next run, its sensitivity tags when its text as tagged (with its first quotes) changed, and its
+  edges' citations now.
 
 From then on OTHER has no text (im.idea_text) and isn't kept (im.idea_kept): it's no card, no matcher candidate and
 not embedded, so no capture can join it.
@@ -139,13 +140,7 @@ def merge(conn, keep_ref: str, other_ref: str) -> dict:
         connections = _repoint_connections(conn, keep, other)
         lineage = _repoint_lineage(conn, keep, other)
         verdicts = conn.execute("DELETE FROM im.connection_verdicts WHERE %s IN (a, b)", (other,)).rowcount
-        conn.execute("""INSERT INTO im.idea_themes (idea_id, theme_id, origin)
-                        SELECT %(k)s, t.theme_id, t.origin FROM im.idea_themes t
-                        WHERE t.idea_id = %(o)s AND NOT EXISTS (SELECT 1 FROM im.idea_theme_blocks b
-                                                                WHERE b.idea_id = %(k)s AND b.theme_id = t.theme_id)
-                        ON CONFLICT DO NOTHING""", {"k": keep, "o": other})
-        for table in ("idea_themes", "theme_checks", "idea_embeddings", "idea_positions", "weights",
-                      "idea_sensitivity"):
+        for table in ("idea_embeddings", "idea_positions", "weights", "idea_sensitivity"):
             conn.execute(f"DELETE FROM im.{table} WHERE idea_id = %s", (other,))
         conn.execute("DELETE FROM im.proposals WHERE idea_id = %s AND outcome IS NULL", (other,))
         resolved = conn.execute(

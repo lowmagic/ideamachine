@@ -517,6 +517,7 @@ def test_a_lens_placed_on_the_tree_and_the_grid_takes_its_place_from_the_stand_i
     lattice.place(matched, HashEmbedder().model_version)
     build, coffee, new = (str(idea(matched, t)) for t in (
         "Broken builds as signal", "The coffee order is the real meeting.", "Something new"))
+    matched.execute("DELETE FROM im.connections")   # the seeded one would make a second neighbourhood, as large
     judged(matched, build, coffee, "related")   # the one stand-in neighbourhood, on Kether
     made = as_app(admin, lambda c: lens.add(c, "By hand", kind="none"))
     for i in (new, coffee):
@@ -550,7 +551,7 @@ def test_a_lens_is_made_and_shaped_from_its_pages(served, matched):  # noqa: F81
     status, headers, _ = request(served, "POST", "/lenses", form, cookie)
     assert status == 303 and headers["Location"].startswith("/lens/")
     made = headers["Location"].removeprefix("/lens/")
-    assert table(matched, "SELECT filters FROM im.lenses") == [
+    assert table(matched, "SELECT filters FROM im.lenses WHERE lens_id = %s", made) == [
         ({"said_by_me": True, "maturity": ["candidate", "idea"]},)]
     assert request(served, "POST", "/lenses", urlencode({"name": "said BY me", "kind": "all"}), cookie)[0] == 400
     assert request(served, "POST", "/lenses", urlencode({"name": "Dates", "said_since": "2026-02-30"}), cookie)[0] \
@@ -563,7 +564,7 @@ def test_a_lens_is_made_and_shaped_from_its_pages(served, matched):  # noqa: F81
     page = request(served, "GET", f"/lens/{made}", cookie=cookie)[2]
     assert "Pinned out" in page.split("<ol>")[-1] and "Broken builds as signal" in page.split("Pinned out")[1]
     request(served, "POST", f"/lens/{made}", urlencode({"action": "state", "state": "archived"}), cookie)
-    assert table(matched, "SELECT state FROM im.lenses") == [("archived",)]
+    assert table(matched, "SELECT state FROM im.lenses WHERE lens_id = %s", made) == [("archived",)]
     assert request(served, "GET", "/board/tree", cookie=cookie)[0] == 200
     assert request(served, "GET", f"/sky?lens={made}", cookie=cookie)[0] == 200
     assert request(served, "GET", f"/lens/{uuid.uuid4()}", cookie=cookie)[0] == 404

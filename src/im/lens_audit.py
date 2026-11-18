@@ -41,7 +41,7 @@ import random
 import re
 from pathlib import Path
 
-from im import egress, jev, llm, themes
+from im import egress, jev, llm
 from im.lens_run import cards, nearest
 from im.eligibility_audit import wilson
 
@@ -380,7 +380,7 @@ def review(conn, client, embedder, folder: Path, model: str, effort: str = "low"
     plans = []
     for lens in lenses:
         system = REVIEW_SYSTEM.format(name=lens["name"], description=lens["description"])
-        pv = themes.version(system, REVIEW_SCHEMA, model, effort)
+        pv = llm.version(system, REVIEW_SCHEMA, model, effort)
         labels = store["prompts"].setdefault(pv, {"lens": lens["id"], "description": lens["description"],
                                                   "labels": {}})["labels"]
         plans.append((lens, system, pv, labels, _strata(conn, embedder, lens, live, lambda i: half(i) == "dev")))

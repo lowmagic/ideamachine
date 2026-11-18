@@ -37,10 +37,10 @@ class ExtractConfig:
 
 @dataclass(frozen=True)
 class ModelConfig:
-    """The model a stage asks, and its effort: [match], [themes], [digest], [connect]. Both go into the stage's version:
-    what that stage did under the old one (the ideas that fit no theme, the pairs the connection judge has judged) is
-    held until `im reread` (im.reread); the matcher and the digest use it from then on. `max_tokens`, a request's
-    output budget, isn't in the version (None: the stage's own)."""
+    """The model a stage asks, and its effort: [match], [digest], [connect]. Both go into the stage's version: what
+    that stage did under the old one (the pairs the connection judge has judged) is held until `im reread`
+    (im.reread); the matcher and the digest use it from then on. `max_tokens`, a request's output budget, isn't in the
+    version (None: the stage's own)."""
     model: str = "claude-opus-5-5"
     effort: str = "low"
     max_tokens: int | None = None
@@ -100,7 +100,6 @@ class Config:
     extract: ExtractConfig = ExtractConfig()
     lattice: LatticeConfig = LatticeConfig()
     match: ModelConfig = ModelConfig()          # the lattice's matcher
-    themes: ModelConfig = ModelConfig()
     digest: ModelConfig = ModelConfig()
     connect: ConnectConfig = ConnectConfig()   # the connection judge
     weight: WeightConfig = WeightConfig()
@@ -115,6 +114,8 @@ def load() -> Config:
         data = tomllib.load(f)
     if "triage" in data:   # the triage backends, retired with V1's routing, labels and evals: ignored until deleted
         print(f"[triage]: retired with routing; delete it from {path}", file=sys.stderr)
+    if "themes" in data:   # the themes filer, proposer and describer, retired when themes became lenses (M5)
+        print(f"[themes]: retired when themes became lenses; delete it from {path}", file=sys.stderr)
     egress = {k: tuple(v) if isinstance(v, list) else v for k, v in data.get("egress", {}).items()
               if k not in RETIRED_EGRESS}
     if retired := [k for k in RETIRED_EGRESS if k in data.get("egress", {})]:
@@ -124,7 +125,7 @@ def load() -> Config:
     if retired := [k for k in RETIRED_EXTRACT if k in data.get("extract", {})]:
         print(f"[extract] {', '.join(retired)}: retired with prompts v1 to v4 (decision 0012); delete it from {path}",
               file=sys.stderr)
-    models = {k: ModelConfig(**data.get(k, {})) for k in ("match", "themes", "digest")}
+    models = {k: ModelConfig(**data.get(k, {})) for k in ("match", "digest")}
     models["connect"] = ConnectConfig(**data.get("connect", {}))
     return Config(segment=SegmentConfig(**data.get("segment", {})),
                   extract=ExtractConfig(**extract), lattice=LatticeConfig(**data.get("lattice", {})),

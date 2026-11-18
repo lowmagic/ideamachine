@@ -338,7 +338,7 @@ def draft(conn, client, folder: Path, model: str = "claude-opus-5-5", effort: st
     """A model marks every pair on the sheet, blind to my marks, into draft-<model>-<effort>-labels<n>-<policy>.json.
     Each request goes to the egress log, like every other call that sends what was said. A pair whose answer fails is
     logged and skipped, so a rerun asks again; the cap, or the model being unavailable, stops the draft."""
-    from im import egress, llm, themes
+    from im import egress, llm
 
     key = json.loads((folder / "key.json").read_text())
     if model.startswith("jev"):
@@ -346,7 +346,7 @@ def draft(conn, client, folder: Path, model: str = "claude-opus-5-5", effort: st
     shown = _pairs_as_shown((folder / "sheet.md").read_text())
     out_path = folder / f"draft-{model.replace('/', '_')}-{effort}-labels{LABELSET}{policy_tag()}.json"
     got = json.loads(out_path.read_text()) if out_path.exists() else {}
-    pv = themes.version(connect.SYSTEM, connect.SCHEMA, model, effort)
+    pv = llm.version(connect.SYSTEM, connect.SCHEMA, model, effort)
     cost, failed, stopped = 0.0, [], None
     for num, p in sorted(key["pairs"].items(), key=lambda kv: int(kv[0])):
         if num in got or num not in shown:

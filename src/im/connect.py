@@ -21,7 +21,7 @@ import json
 
 import numpy as np
 
-from im import citations, egress, jev, llm, reread, themes
+from im import citations, egress, jev, llm, reread
 from im.config import Config, ModelConfig
 
 FLOOR, K = 0.65, 10   # nominated: cosine >= FLOOR, among either side's K nearest. Not in the method: they choose which
@@ -71,14 +71,14 @@ SCHEMA = {
 
 def prompt_version(chat: ModelConfig = Config.connect) -> str:
     """What Terra's requests are logged under: B4's draft prompt version for the same model and effort."""
-    return themes.version(SYSTEM, SCHEMA, chat.model, chat.effort)
+    return llm.version(SYSTEM, SCHEMA, chat.model, chat.effort)
 
 
 def method(chat: ModelConfig = Config.connect) -> str:
     """The judge's method, on its verdicts, connections and kinds: Terra's prompt version, model and effort, and the
     screen (Jev's question and model, and the cut). A change holds every pair judged before (the re-read gate)."""
     screen = [jev.MODEL, jev.QUESTIONS["edge"], SCREEN_CUT]
-    return f"connect-1:{themes.version(prompt_version(chat), chat.model, chat.effort, screen)}"
+    return f"connect-1:{llm.version(prompt_version(chat), chat.model, chat.effort, screen)}"
 
 
 # --- A pair as shown -------------------------------------------------------------------------------------------------

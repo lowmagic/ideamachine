@@ -29,7 +29,7 @@ from pathlib import Path
 
 import numpy as np
 
-from im import connect, edge_audit, egress, llm, themes
+from im import connect, edge_audit, egress, llm
 
 FACETS = 4
 FACET_BATCH = 25
@@ -131,7 +131,7 @@ def _ask(conn, client, model: str, effort: str, system: str, schema: dict, text:
     it was refused. A request that failed stops the sheet before it's written, so a rerun can ask again rather than
     find a smaller sheet in the folder."""
     a = egress.ask(conn, client, model, effort, system, schema, text, segment_ids=egress.segments_of(conn, ideas),
-                   prompt_version=themes.version(system, schema, model, effort), monthly_cap_usd=monthly_cap_usd)
+                   prompt_version=llm.version(system, schema, model, effort), monthly_cap_usd=monthly_cap_usd)
     if a.failed:
         raise SystemExit(f"{model} failed ({a.error}); no sheet written, run it again")
     return a.data
@@ -444,7 +444,7 @@ def _ask_jev(conn, client, question: str, state: dict, probes: bool, segment_ids
     body = client.body(question, state, probes)
     asked = json.dumps(body["questions"], sort_keys=True)
     return egress.send(conn, lambda: client.complete(body), model=client.model, payload=json.dumps(body),
-                       segment_ids=segment_ids, prompt_version=themes.version(asked, {}, client.model, ""),
+                       segment_ids=segment_ids, prompt_version=llm.version(asked, {}, client.model, ""),
                        monthly_cap_usd=monthly_cap_usd, read=lambda r: jev.read(question, r, probes))
 
 
@@ -508,7 +508,7 @@ def draft(conn, client, folder: Path, model: str, effort: str = "low", quotes_on
             a = egress.ask(conn, client, model, effort, system, DRAFT_SCHEMA, shown[num], max_tokens=4000,
                            # a summary sheet's item cites its own lines
                            segment_ids=p.get("segments") or egress.segments_of(conn, p["ideas"]),
-                           prompt_version=themes.version(system, DRAFT_SCHEMA, model, effort),
+                           prompt_version=llm.version(system, DRAFT_SCHEMA, model, effort),
                            monthly_cap_usd=monthly_cap_usd)
         except llm.Stop as e:
             stopped = str(e)[:200]

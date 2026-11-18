@@ -10,7 +10,7 @@ me. The digest keeps the segment IDs behind every idea it was shown, so forgetti
 
 from datetime import date, datetime, time, timedelta
 
-from im import egress, llm, themes
+from im import egress, llm
 from im.config import ModelConfig
 
 KINDS = ("recurring", "convergence", "sleeper", "project", "outside_value")
@@ -46,7 +46,7 @@ SCHEMA = {
 
 
 def prompt_version(chat: ModelConfig = ModelConfig()) -> str:
-    return themes.version(SYSTEM, SCHEMA, chat.model, chat.effort)
+    return llm.version(SYSTEM, SCHEMA, chat.model, chat.effort)
 
 
 def last_week(today: date | None = None) -> date:
@@ -168,7 +168,9 @@ def digest_stage(conn, client, monthly_cap_usd: float = 20.0, week: date | None 
         answer, segs = {"summary": "Nothing new was said this week.", "points": []}, []
     else:
         try:
-            a = themes.ask(conn, client, chat, SYSTEM, SCHEMA, text, pv, ids, monthly_cap_usd)
+            a = egress.ask(conn, client, chat.model, chat.effort, SYSTEM, SCHEMA, text, prompt_version=pv,
+                           segment_ids=egress.segments_of(conn, ids), monthly_cap_usd=monthly_cap_usd,
+                           max_tokens=chat.max_tokens)
         except llm.Stop as e:
             stats["stopped"] = str(e)[:200]
             return stats

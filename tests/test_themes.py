@@ -1,42 +1,20 @@
-"""Themes: filing ideas into my themes, proposing new ones, and applying my theme feedback."""
+"""Themes are lenses (M5, migration 071): every lens not archived is listed as a theme, an idea's themes are the
+lenses it's in, and the theme events shape lenses, applied the moment they're sent."""
 
 import json
-import re
-from types import SimpleNamespace
+import uuid
 
+import psycopg
 import pytest
 
-from im import extract, lattice, themes
+from im import extract, lattice
 
 from helpers import HashEmbedder, run, table
 from test_extract import FakeClaude
 from test_lattice import FakeMatcher, items_for, seed
+from test_review import as_web_role
 
-
-class FakeThemer:
-    """Files ideas mentioning 'signal' or 'build' into the theme named like 'signals', everything else nowhere;
-    proposes one theme from the first three loose ideas."""
-
-    def __init__(self):
-        self.calls = []
-        self.beta = SimpleNamespace(messages=SimpleNamespace(create=self.create))
-
-    def create(self, **kw):
-        self.calls.append(kw)
-        text = kw["messages"][0]["content"]
-        if "fit no theme" in text:
-            loose = re.findall(r"^(\d+)\. ", text.split("Ideas that fit no theme:")[1], re.M)
-            answer = {"themes": [{"name": "Gadgets", "description": "Things to build.",
-                                  "ideas": [int(n) for n in loose[:3]]},
-                                 {"name": "Too small", "description": "x", "ideas": [1]}]}
-        else:
-            letters = dict(re.findall(r"^([A-Z])\. (.+?)(?::|$)", text.split("Ideas:")[0], re.M))
-            signal = next((L for L, n in letters.items() if "signal" in n.lower()), None)
-            answer = {"assignments": [{"idea": int(n), "themes": [signal] if re.search("signal|build", line, re.I) else []}
-                                      for n, line in re.findall(r"^(\d+)\. (.*)$", text.split("Ideas:")[1], re.M)]}
-        content = [SimpleNamespace(type="text", text=json.dumps(answer))]
-        return SimpleNamespace(content=content, stop_reason="end_turn", model="claude-opus-5-5", _request_id="r",
-                               usage=SimpleNamespace(input_tokens=500, output_tokens=100))
+EVENT = "INSERT INTO pub.feedback_events (kind, theme_id, idea_id, payload) VALUES (%s, %s, %s, %s)"
 
 
 @pytest.fixture
@@ -48,36 +26,8 @@ def lat(pipe, cfg, stream):
     return pipe
 
 
-def themed(conn, title_like):
-    return [n for (n,) in table(conn, """SELECT t.name FROM im.idea_themes it JOIN im.themes t USING (theme_id)
-                                         JOIN im.ideas d USING (idea_id) WHERE d.title LIKE %s ORDER BY 1""",
-                                 title_like)]
-
-
-def test_filing_assigns_or_records_none_and_only_reruns_when_themes_change(lat):
-    claude = FakeThemer()
-    stats = themes.file_stage(lat, claude)
-    assert stats["pending"] == 2 and stats["assigned"] == 1 and stats["none"] == 1  # the evolved idea, the new one
-    assert themed(lat, "Broken builds%") == ["Models and signals"]
-    assert themes.file_stage(lat, claude)["pending"] == 0 and len(claude.calls) == 1
-    lat.execute("INSERT INTO im.themes (name, origin) VALUES ('Another', 'mine')")
-    assert themes.file_stage(lat, claude)["pending"] == 1  # the one that fit nothing is looked at again
-
-
-def test_proposals_need_enough_loose_ideas_and_skip_small_groups(lat):
-    claude = FakeThemer()
-    themes.file_stage(lat, claude)
-    assert themes.propose_stage(lat, claude)["proposed"] == 0  # one loose idea is not enough
-    for i in range(6):
-        lat.execute("""WITH d AS (INSERT INTO im.ideas (title, statement, origin)
-                                  VALUES (%s, 'a loose idea', 'mine') RETURNING idea_id)
-                       INSERT INTO im.theme_checks (idea_id, themes_version, result) SELECT idea_id, 'x', 'none' FROM d""",
-                    (f"Loose {i}",))
-    stats = themes.propose_stage(lat, claude)
-    assert stats["proposed"] == 1
-    assert table(lat, "SELECT name, origin, pinned, n_ideas FROM pub.themes WHERE name = 'Gadgets'") == \
-        [("Gadgets", "clustered", False, 3)]
-    assert themes.propose_stage(lat, claude)["unseen"] == 0  # everything has been considered once
+def send(admin, kind, theme, idea=None, payload=None):
+    return as_web_role(admin, EVENT, kind, theme, idea, json.dumps(payload or {}))
 
 
 def results(conn):
@@ -87,38 +37,99 @@ def results(conn):
                                          ORDER BY a.event_id""")]
 
 
-def test_feedback_pins_renames_and_rejects_proposals_only_at_once(lat):
-    gadgets = lat.execute("INSERT INTO im.themes (name, origin) VALUES ('Gadgets', 'clustered') RETURNING theme_id"
-                          ).fetchone()[0]
-    archive = themes.find(lat, "models")
-    themes.record(lat, "reject_theme", archive)
-    themes.record(lat, "rename_theme", gadgets, {"name": "Builds and gadgets"})
-    themes.record(lat, "pin_theme", gadgets)
-    themes.record(lat, "rename_theme", gadgets, {"name": "jokes"})   # another theme's name
-    assert results(lat) == ["not rejected: only unpinned proposals can be", "renamed", "pinned", "name taken"]
-    assert themes.apply_feedback(lat) == {}   # nothing left for the run
-    assert table(lat, "SELECT pinned FROM im.themes WHERE name = 'Builds and gadgets'") == [(True,)]
-    other = lat.execute("INSERT INTO im.themes (name, origin) VALUES ('Nope', 'clustered') RETURNING theme_id"
-                        ).fetchone()[0]
-    themes.record(lat, "reject_theme", other)
-    assert results(lat)[-1] == "rejected"
-    assert table(lat, "SELECT name FROM im.theme_rejections") == [("Nope",)]
-    with pytest.raises(ValueError):
-        themes.find(lat, "zzz")
+def theme(conn, name):
+    return table(conn, "SELECT lens_id FROM im.lenses WHERE name = %s", name)[0][0]
 
 
-def test_events_from_before_the_trigger_apply_on_the_run(lat, admin):
-    theme = themes.find(lat, "jokes")
-    with admin.transaction():
-        admin.execute("SET LOCAL session_replication_role = replica")   # no triggers: as before migration 024
-        admin.execute("INSERT INTO pub.feedback_events (kind, theme_id) VALUES ('unpin_theme', %s)", (theme,))
-    assert results(lat) == []
-    assert themes.apply_feedback(lat) == {"unpinned": 1}
-    assert table(lat, "SELECT pinned FROM im.themes WHERE theme_id = %s", theme) == [(False,)]
+def idea(conn, title_like):
+    return table(conn, "SELECT idea_id FROM im.ideas WHERE title LIKE %s", title_like)[0][0]
 
 
-def test_a_refused_filing_isnt_fits_no_theme_and_is_asked_again(lat):
-    stats = themes.file_stage(lat, FakeClaude(stop_reason="refusal"))
-    assert table(lat, "SELECT count(*) FROM im.theme_checks") == [(0,)]   # no answer isn't "fits no theme"
-    assert (stats["pending"], stats["refused"], stats["none"]) == (2, 1, 0)
-    assert themes.file_stage(lat, FakeThemer())["assigned"] == 1
+def members(conn, lens):
+    return sorted(t for (t,) in table(conn, """SELECT d.title FROM pub.lens_members m JOIN pub.ideas d USING (idea_id)
+                                              WHERE m.lens_id = %s""", lens))
+
+
+def themed(conn, title_like):
+    return table(conn, "SELECT themes FROM pub.ideas WHERE title LIKE %s", title_like)[0][0]
+
+
+def test_my_lenses_not_archived_are_my_themes(lat, admin):
+    lat.execute("""INSERT INTO im.lenses (lens_id, name, query, state) VALUES
+                     (gen_random_uuid(), 'Coffee', '{"kind": "jev", "deciding": {"a": ["Is `item` about coffee?", null]},
+                      "rule": "max", "cut": 0.5}', 'active'),
+                     (gen_random_uuid(), 'Old', '{"kind": "none"}', 'archived')""")
+    assert as_web_role(admin, "SELECT name, origin, pinned, n_ideas FROM pub.themes ORDER BY name") == [
+        ("Coffee", "mine", False, 0), ("Jokes", "mine", True, 1), ("Models and signals", "mine", True, 2)]
+    assert themed(lat, "A solitary%") == ["Jokes"]
+    assert themed(lat, "Signal may%") == ["Models and signals"]
+
+
+def test_pin_unpin_and_rename_a_theme_and_reject_none(lat, admin):
+    jokes = theme(lat, "Jokes")
+    send(admin, "unpin_theme", jokes)
+    send(admin, "rename_theme", jokes, payload={"name": "models AND signals"})   # another theme's name
+    send(admin, "rename_theme", jokes, payload={"name": " Quips "})
+    send(admin, "reject_theme", jokes)
+    assert results(lat) == ["unpinned", "name taken", "renamed",
+                            "not rejected: only proposals can be, and themes are no longer proposed"]
+    assert table(lat, "SELECT name, state FROM im.lenses WHERE lens_id = %s", jokes) == [("Quips", "active")]
+    send(admin, "pin_theme", jokes)
+    assert table(lat, "SELECT state FROM im.lenses WHERE lens_id = %s", jokes) == [("pinned",)]
+    send(admin, "pin_theme", uuid.uuid4())   # no such lens: kept, its id in the payload
+    assert results(lat)[-1] == "no such theme"
+
+
+def test_a_merge_moves_my_pins_and_archives_the_theme_merged_away(lat, admin):
+    models, jokes = theme(lat, "Models and signals"), theme(lat, "Jokes")
+    before = members(lat, models) + members(lat, jokes)
+    send(admin, "merge_theme", jokes, payload={"into": str(models)})
+    send(admin, "merge_theme", jokes, payload={"into": str(models)})   # a resend changes nothing
+    assert results(lat) == ["merged", "merged"]
+    assert members(lat, models) == sorted(before)
+    assert table(lat, "SELECT state FROM im.lenses WHERE lens_id = %s", jokes) == [("archived",)]
+    assert as_web_role(admin, "SELECT name, n_ideas FROM pub.themes") == [("Models and signals", 3)]
+    assert themed(lat, "A solitary%") == ["Models and signals"]
+
+
+def test_a_split_makes_my_theme_under_the_senders_id(lat, admin):
+    models = theme(lat, "Models and signals")
+    inside = members(lat, models)
+    new = uuid.uuid4()
+    split = {"new_theme_id": str(new), "name": "Signals proper",
+             "idea_ids": [str(idea(lat, inside[0])), str(uuid.uuid4())]}
+    send(admin, "split_theme", models, payload=split)
+    send(admin, "split_theme", models, payload=split)   # a resend
+    send(admin, "pin_theme", new)   # the sender can act on the new theme at once
+    assert results(lat) == ["split: 1 moved", "repeat", "pinned"]
+    assert as_web_role(admin, "SELECT name, origin, pinned, n_ideas FROM pub.themes WHERE theme_id = %s", new) == \
+        [("Signals proper", "mine", True, 1)]
+    assert members(lat, models) == inside[1:]   # pinned out of the source
+    assert members(lat, new) == inside[:1]
+
+
+def test_filing_and_unfiling_pin_an_idea_in_and_out(lat, admin):
+    jokes = theme(lat, "Jokes")
+    builds = idea(lat, "Broken builds%")
+    send(admin, "file_idea", jokes, builds)
+    assert themed(lat, "Broken builds%") == ["Jokes"]
+    send(admin, "unfile_idea", jokes, builds)
+    send(admin, "unfile_idea", jokes, idea(lat, "A solitary%"))   # one I filed by hand before: out as well
+    assert results(lat) == ["filed", "unfiled", "unfiled"]
+    assert themed(lat, "Broken builds%") == [] and members(lat, jokes) == []
+
+
+def test_theme_events_are_checked(lat, admin):
+    models = theme(lat, "Models and signals")
+    builds = idea(lat, "Broken builds%")
+    for kind, lens, i, payload in [
+            ("pin_theme", None, None, {}), ("rename_theme", models, None, {"name": " "}),
+            ("rename_theme", models, None, {"name": "x" * 81}), ("merge_theme", models, None, {"into": str(models)}),
+            ("merge_theme", models, None, {"into": "nope"}), ("merge_theme", models, None, {}),
+            ("split_theme", models, None, {"name": "A", "idea_ids": [str(builds)]}),   # no new_theme_id
+            ("split_theme", models, None, {"new_theme_id": str(uuid.uuid4()), "name": "A", "idea_ids": []}),
+            ("file_idea", models, None, {}), ("unfile_idea", None, builds, {})]:
+        with pytest.raises(psycopg.errors.CheckViolation):
+            send(admin, kind, lens, i, payload)
+    with pytest.raises(psycopg.errors.InsufficientPrivilege):
+        as_web_role(admin, "DELETE FROM im.lens_pins")
