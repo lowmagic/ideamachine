@@ -21,7 +21,7 @@ WHERE e.current
 """
 
 # Nothing derived refers to a tombstoned segment: no episode, observation or connection verdict holds one, and no idea
-# was made from one.
+# was made from one. Nor does a lens pin, my input anchored to speech.
 TOMBSTONED = """
 SELECT es.episode_id, es.segment_id
 FROM im.episode_segments es JOIN im.source_tombstones t USING (segment_id)
@@ -34,6 +34,9 @@ FROM im.ideas d JOIN im.source_tombstones t ON t.segment_id = ANY(d.segment_ids)
 UNION ALL
 SELECT v.a, t.segment_id
 FROM im.connection_verdicts v JOIN im.source_tombstones t ON t.segment_id = ANY(v.segment_ids)
+UNION ALL
+SELECT p.lens_id, t.segment_id
+FROM im.lens_pins p JOIN im.source_tombstones t ON t.segment_id = ANY(p.segment_ids)
 """
 
 # Every edge cites what exists (migration 035): no observation that's gone, and nothing missing when an end has one.

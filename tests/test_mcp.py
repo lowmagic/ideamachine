@@ -1,6 +1,6 @@
-"""The MCP server (im.mcp, served by `im web` at /mcp): Lattice's 19 tools against today's pub, as the web view's
-role, behind its token; my calls are feedback events from 'mcp'; ideas aren't rated; demo mode is the app's one
-setting. Ported from Lattice's tests (lattice 6def765: tests/test_mcp.py, tests/test_audit.py)."""
+"""The MCP server (im.mcp, served by `im web` at /mcp): Lattice's 19 tools and open_lens against today's pub, as the
+web view's role, behind its token; my calls are feedback events from 'mcp'; ideas aren't rated; demo mode is the
+app's one setting. Ported from Lattice's tests (lattice 6def765: tests/test_mcp.py, tests/test_audit.py)."""
 
 import http.client
 import json
@@ -18,7 +18,7 @@ from test_review import as_web_role
 TOKEN = "a-long-enough-test-token"
 NAMES = {"search_ideas", "get_idea", "best_ideas", "list_themes", "open_theme", "whats_new", "weekly_digest",
          "draft_material", "rename_theme", "merge_themes", "split_theme", "file_idea", "similar_ideas", "add_idea",
-         "proposals", "keep_idea", "star_idea", "link_ideas", "note_idea"}
+         "proposals", "keep_idea", "star_idea", "link_ideas", "note_idea", "open_lens"}
 
 
 @pytest.fixture
@@ -226,3 +226,32 @@ def test_demo_mode_is_one_setting_for_mcp_too(app, seeded_lattice, admin):
     assert app("get_idea", idea_id=coffee)["structuredContent"]["id"] == coffee
     assert table(pipe, "SELECT kind, source FROM pub.feedback_events WHERE kind LIKE 'demo_%%' ORDER BY event_id") \
         == [("demo_on", "emanation"), ("demo_off", "emanation")]
+
+
+def test_open_lens_shows_a_lens_by_any_part_of_its_name_with_why_each_idea_is_in(app, seeded_lattice, admin):
+    from im import lens
+
+    assert "none yet" in app("open_lens", lens="Signals")["content"][0]["text"]
+    made = as_app_conn(admin, lambda c: lens.add(c, "Everything I said", kind="all", filters={"said_by_me": True}))
+    coffee = idea_of(seeded_lattice, "coffee")
+    as_app_conn(admin, lambda c: lens.record(c, "lens_pin", {"lens_id": made, "pin": "in"}, coffee))
+    got = app("open_lens", lens="everything")["structuredContent"]
+    assert (got["id"], got["name"], got["state"]) == (made, "Everything I said", "active")
+    assert got["judged"]["asked"] == got["judged"]["of"] > 0
+    whys = {i["title"]: i["why"] for i in got["ideas"]}
+    assert whys["The coffee order is the real meeting."] == "pin" and got["ideas"][0]["why"] == "pin"
+    assert set(whys.values()) == {"pin", "query"}
+    missing = app("open_lens", lens="nothing like it")
+    assert missing["isError"] and "Everything I said" in missing["content"][0]["text"]
+
+    as_web_role(admin, "INSERT INTO pub.feedback_events (kind, idea_id, payload) VALUES ('idea_sensitive', %s, %s)",
+                coffee, json.dumps({"sensitive": True}))
+    web.set_demo(admin, True)
+    shown = app("open_lens", lens=made)["structuredContent"]
+    assert "The coffee order is the real meeting." not in [i["title"] for i in shown["ideas"]]
+
+
+def as_app_conn(admin, fn):
+    with admin.transaction():
+        admin.execute("SET LOCAL ROLE lattice_app")
+        return fn(admin)

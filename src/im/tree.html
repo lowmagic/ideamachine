@@ -15,11 +15,11 @@ nav a { background: var(--panel); padding: 4px 10px; border-radius: 6px; }
   border-radius: 10px; padding: 12px 14px; display: none; }
 #bar b { display: block; } #bar small { color: var(--muted); display: block; margin: 2px 0 8px; }
 </style>
-<nav><a href="/">Feed</a><a href="/sky">Sky</a><a href="/trails">Trails</a><a href="/threads">Threads</a><a href="/grid">Grid</a></nav>
-<div id="note">There are no lenses yet. Each sephira and path holds one of the 32 largest neighborhoods of connected
-cards as a stand-in, so where a card sits means nothing yet. Cards on none are the far sky. A card on more than one has
-a star on each, joined by a double line. Drag to turn, pinch or scroll to zoom. Tap a star to light it and again to
-pick it, or tap a sephira or a path.</div>
+<nav><a href="/">Feed</a><a href="/sky">Sky</a><a href="/trails">Trails</a><a href="/threads">Threads</a><a href="/grid">Grid</a><a href="/board/tree">Board</a></nav>
+<div id="note">Each sephira and path holds the lens I put there, or, until I put one, one of the 32 largest
+neighborhoods of connected cards as a stand-in, so where a card sits there means nothing yet. Cards on none are the
+far sky. A card on more than one has a star on each, joined by a double line. Drag to turn, pinch or scroll to zoom.
+Tap a star to light it and again to pick it, or tap a sephira or a path.</div>
 <canvas id="c"></canvas>
 <div id="bar"><b id="t"></b><small id="f"></small><a id="open">Open</a></div>
 <script type="application/json" id="d">{data}</script>
@@ -197,9 +197,9 @@ function draw(now) {
 }
 
 function resize() { dpr = devicePixelRatio || 1; W = innerWidth; H = innerHeight; c.width = W * dpr; c.height = H * dpr; }
-function show(title, facts, id) {
+function show(title, facts, id, href) {
   document.getElementById("bar").style.display = title ? "block" : "none";
-  const open = document.getElementById("open"); open.hidden = !id; if (id) open.href = "/idea/" + id;
+  const open = document.getElementById("open"); open.hidden = !(id || href); if (id || href) open.href = href || "/idea/" + id;
   document.getElementById("t").textContent = title || ""; document.getElementById("f").textContent = facts || "";
 }
 const lensName = n => n < 10 ? NODE[n].name : `Path ${n + 1}, ${PATHS[n - 10][2]} (${NODE[PATHS[n - 10][0] - 1].name} to ${NODE[PATHS[n - 10][1] - 1].name})`;
@@ -227,6 +227,8 @@ function tap(px, py) {
   });
   if (picked < 0) return show();
   const held = S.filter(s => s.lens === picked).length;
+  const lens = (D.placed || [])[picked];
+  if (lens) return show(lensName(picked) + ": " + lens[0], held + " cards · the lens I put here", null, "/lens/" + lens[1]);
   show(lensName(picked), held + " cards · stand-in for a lens: the neighborhood that starts “" + (D.named[picked] || "") + "”");
 }
 

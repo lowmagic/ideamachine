@@ -199,6 +199,21 @@ One PR each, in order:
    ChatGPT's ranges in `install/`, `tests/test_public_mcp.py`; setup in deploy.md.
 3. Lens storage and events, kinds `all` and `none`, pins, filters, `pub.lens_members`, `/lens/<id>`, `open_lens`;
    boards stored, the Tree and the Grid reading them.
+   **Built:** migration 069 (`im.lenses`, `im.lens_pins`, `im.boards` with the Tree and the Grid, `im.board_lenses`;
+   `pub.lenses`, `pub.lens_members`, `pub.demo_lens_members`, `pub.lens_pins`, `pub.boards`, `pub.board_lenses`),
+   `lens.py`'s stored lenses, `/lenses`, `/lens/<id>`, `/board/tree`, `/board/grid`, `/sky?lens=`, a card's lenses,
+   `open_lens` (demo too), `im lens list | show`, `tests/test_lenses.py`. Settled while building:
+   - **Events:** `lens_add` (the sender makes the id, as `split_theme` does), `lens_edit`, `lens_state` (`active`,
+     `pinned`, `archived`: one kind, my latest wins), `lens_pin` (a card in or out) and `lens_unpin`, `board_place`
+     and `board_remove`. A lens is named in the payload, not a column: lenses are never deleted. Shapes are CHECKs;
+     what no longer applies (a name taken, no such lens or place) is recorded in `im.feedback_applied`, not refused.
+   - **A pin's anchor:** the segments the cluster was made from; else what I typed (`idea_add:<event id>`); else one
+     speech capture's segments; else its archive capture's observation. It resolves through re-transcriptions to
+     the clusters made from that speech or citing it now, and through merges to the cluster kept.
+   - **Filters:** maturity and kept-as as lists, said by me and sensitive as yes or no, said since and until as days.
+   - **Places:** the Tree's by sephira and path letter (`kether`, `aleph`), the Grid's as numbered cells, shown in
+     their order before the stand-in neighborhoods.
+   - Members are cards (`pub.cards`); `all` and `none` judge every card, so their judged share is all of them.
 4. The `jev` kind and `im lens run`.
 5. Themes become lenses.
 6. The canonical lenses, judged under bars registered in im-evals first.

@@ -215,6 +215,30 @@ def cmd_themes(args) -> None:
         print(themes.listing(conn))
 
 
+def cmd_lens(args) -> None:
+    """The lenses (decision 0013): every one with its size, or one with its cards and why each is in."""
+    from im import lens
+
+    with db.connect(db.pipeline_dsn()) as conn:
+        if args.action == "list":
+            for x in lens.stored(conn):
+                print(f"{x['id'][:8]}  {x['name']}  ({x['cards']} cards; {lens.describe(x)}; "
+                      f"{lens.STATES[x['state']]})")
+            return
+        if not args.lens:
+            raise SystemExit("im lens show needs a lens: its name, part of it, or its id")
+        try:
+            x = lens.find(conn, args.lens)
+        except ValueError as e:
+            raise SystemExit(str(e)) from None
+        asked, of = lens.judged(conn, x)
+        print(f"{x['name']}  ({lens.describe(x)}; {lens.STATES[x['state']]}; judged {asked} of {of})")
+        if x["description"]:
+            print(x["description"])
+        for c in lens.members(conn, x["id"]):
+            print(f"  {str(c['idea_id'])[:8]}  {'pin  ' if c['why'] == 'pin' else 'query'}  {c['title']}")
+
+
 def cmd_pending(args) -> None:
     """What the next run would send, without sending anything, and what the re-read gate holds, per stage. After
     moving the database to another machine, `already_extracted_would_resend` must be 0: anything else means the
@@ -1040,6 +1064,10 @@ def main(argv=None) -> None:
     th.add_argument("theme", nargs="?", help="theme name (or its start), or id prefix")
     th.add_argument("name", nargs="?", help="the new name, for rename")
     th.set_defaults(func=cmd_themes)
+    ln = sub.add_parser("lens", help="the lenses: list them, or show one with its cards and why each is in")
+    ln.add_argument("action", nargs="?", default="list", choices=["list", "show"])
+    ln.add_argument("lens", nargs="?", help="show: a lens's name, part of it, or its id")
+    ln.set_defaults(func=cmd_lens)
     ia = sub.add_parser("ideas", help="what Claude captured; --review to keep or discard each item")
     ia.add_argument("--review", action="store_true", help="keep or discard each undecided item, most confident first")
     ia.add_argument("--all", action="store_true", help="also list discarded items")

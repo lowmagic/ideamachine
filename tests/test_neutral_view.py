@@ -490,7 +490,8 @@ def test_the_tree_stands_a_neighbourhood_in_for_each_lens(matched, admin):  # no
         "Broken builds as signal", "The coffee order is the real meeting.", "Something new"))
     before = sky_data(as_app(admin, web.tree))
     lenses = {s[0]: s[2] for s in before["stars"]}
-    assert lenses[build] == lenses[coffee] == lenses[new] == [] and len(before["named"]) == 1   # no connection: no lens
+    assert lenses[build] == lenses[coffee] == lenses[new] == [] and sum(map(bool, before["named"])) == 1   # no lens
+    assert before["placed"] == [None] * web.TREE_LENSES                     # nothing placed on the Tree board yet
     judged(matched, build, coffee, "related")
     data = sky_data(as_app(admin, web.tree))
     ids = [s[0] for s in data["stars"]]
@@ -508,6 +509,64 @@ def test_the_tree_stands_a_neighbourhood_in_for_each_lens(matched, admin):  # no
     assert hidden[build] == hidden[coffee] == [] and demo["links"] == before["links"]   # on no lens, unlinked
     assert "coffee order" not in json.dumps(demo)                          # and blank
 
+
+def test_a_lens_placed_on_the_tree_and_the_grid_takes_its_place_from_the_stand_in(matched, admin):  # noqa: F811
+    from im import lattice, lens
+    from helpers import HashEmbedder
+
+    lattice.place(matched, HashEmbedder().model_version)
+    build, coffee, new = (str(idea(matched, t)) for t in (
+        "Broken builds as signal", "The coffee order is the real meeting.", "Something new"))
+    judged(matched, build, coffee, "related")   # the one stand-in neighbourhood, on Kether
+    made = as_app(admin, lambda c: lens.add(c, "By hand", kind="none"))
+    for i in (new, coffee):
+        as_app(admin, lambda c, i=i: lens.record(c, "lens_pin", {"lens_id": made, "pin": "in"}, i))
+    as_app(admin, web.place, "tree", "kether", made)
+    as_app(admin, web.place, "grid", "1", made)
+    with pytest.raises(ValueError):
+        as_app(admin, web.place, "tree", "nowhere", made)
+    data = sky_data(as_app(admin, web.tree))
+    lenses = {s[0]: s[2] for s in data["stars"]}
+    assert data["placed"][0] == ["By hand", made] and data["named"][0] == ""   # the lens has Kether, not the stand-in
+    assert lenses[new] == lenses[coffee] == [0] and lenses[build] == []
+    page = as_app(admin, web.grid)
+    first = page.split("<section>")[1]
+    assert f'href="/lens/{made}"' in first and first.count("<circle") == 2 and "1 lens I placed" in page
+    board = as_app(admin, web.board_page, "tree")
+    assert "Kether" in board and f'href="/lens/{made}"' in board and "Path 11, Aleph (Kether to Chokmah)" in board
+    as_app(admin, web.place, "tree", "kether", "")   # leave Kether to its stand-in again
+    assert sky_data(as_app(admin, web.tree))["placed"][0] is None
+
+
+def test_a_lens_is_made_and_shaped_from_its_pages(served, matched):  # noqa: F811
+    from urllib.parse import urlencode
+
+    build = str(idea(matched, "Broken builds as signal"))
+    _, headers, _ = request(served, "POST", "/login", f"token={TOKEN}")
+    cookie = headers["Set-Cookie"].split(";")[0]
+    assert request(served, "GET", "/lenses", cookie=None)[0] == 303
+    form = urlencode([("name", "Said by me"), ("description", "Mine"), ("kind", "all"), ("said_by_me", "yes"),
+                      ("maturity", "candidate"), ("maturity", "idea")])
+    status, headers, _ = request(served, "POST", "/lenses", form, cookie)
+    assert status == 303 and headers["Location"].startswith("/lens/")
+    made = headers["Location"].removeprefix("/lens/")
+    assert table(matched, "SELECT filters FROM im.lenses") == [
+        ({"said_by_me": True, "maturity": ["candidate", "idea"]},)]
+    assert request(served, "POST", "/lenses", urlencode({"name": "said BY me", "kind": "all"}), cookie)[0] == 400
+    assert request(served, "POST", "/lenses", urlencode({"name": "Dates", "said_since": "2026-02-30"}), cookie)[0] \
+        == 400
+    page = request(served, "GET", f"/lens/{made}", cookie=cookie)[2]
+    assert "<h1>Said by me</h1>" in page and "by its query" in page and "judged" in page
+    status, headers, _ = request(served, "POST", f"/idea/{build}", urlencode({"action": "lens_out", "lens": made}),
+                                 cookie)
+    assert (status, headers["Location"]) == (303, f"/idea/{build}")
+    page = request(served, "GET", f"/lens/{made}", cookie=cookie)[2]
+    assert "Pinned out" in page.split("<ol>")[-1] and "Broken builds as signal" in page.split("Pinned out")[1]
+    request(served, "POST", f"/lens/{made}", urlencode({"action": "state", "state": "archived"}), cookie)
+    assert table(matched, "SELECT state FROM im.lenses") == [("archived",)]
+    assert request(served, "GET", "/board/tree", cookie=cookie)[0] == 200
+    assert request(served, "GET", f"/sky?lens={made}", cookie=cookie)[0] == 200
+    assert request(served, "GET", f"/lens/{uuid.uuid4()}", cookie=cookie)[0] == 404
 
 
 def test_the_sky_says_when_each_card_was_first_said_for_replay(matched, admin):  # noqa: F811
@@ -528,17 +587,17 @@ def test_a_grid_cell_is_a_neighbourhood_drawn_as_the_sky_places_it(matched, admi
     lattice.place(matched, HashEmbedder().model_version)
     build, coffee, new = (idea(matched, t) for t in (
         "Broken builds as signal", "The coffee order is the real meeting.", "Something new"))
-    assert "0 cells" in as_app(admin, web.grid)                  # the fixture's pair is too few for a cell
+    assert "then 0 neighborhoods" in as_app(admin, web.grid)     # the fixture's pair is too few for a cell
     for a, b in ((build, coffee), (coffee, new), (build, new)):
         judged(matched, a, b, "related")
     page = as_app(admin, web.grid)
     cell = page.split("<section>")[1]
-    assert "1 cell." in page and cell.count("<circle") == 3 and cell.count("<line") == 3   # its cards and connections
+    assert "then 1 neighborhood " in page and cell.count("<circle") == 3 and cell.count("<line") == 3   # cards, links
     assert "3 cards" in cell and all(f'href="/crossroads/{i}"' in cell for i in (build, coffee, new))
     assert 'href="/sky?lit=' in cell and 'href="/tree?lit=' in cell
     as_app(admin, lambda c: c.execute("""INSERT INTO pub.feedback_events (kind, idea_id, payload)
                                          VALUES ('idea_sensitive', %s, '{"sensitive": true}')""", (new,)))
-    assert "0 cells" in as_app(admin, web.grid, True)             # demo mode: a sensitive card is in no cell
+    assert "then 0 neighborhoods" in as_app(admin, web.grid, True)   # demo mode: a sensitive card is in no cell
 
 
 def test_crossroads_shows_where_its_doors_are_on_the_map(matched, admin):  # noqa: F811

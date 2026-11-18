@@ -58,6 +58,7 @@ uv run im merge --distinct A B    # mark two clusters as distinct points: im mer
 uv run im idea show ID           # a card (full id or unique prefix): its text, whether I corrected it, its quotes, and the text of the clusters merged into it
 uv run im idea edit ID --statement "..."   # correct a card's --title, --statement or --note; '' reverts to Claude's
 uv run im themes                  # themes; im themes pin|unpin|reject <name>, im themes rename <name> <new name>
+uv run im lens                    # the lenses (M5): each with its size, query, filters and state; im lens show <name> lists its cards and why each is in. They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page) or by feedback events
 uv run im load-fixtures --scenario edited   # the same stream after every kind of correction and a forget
 uv run im run
 uv run im check                   # invariant queries

@@ -299,13 +299,15 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   made it: `cli`, `emanation` or `mcp` (the MCP server, `im.mcp`, since M5; Lattice's until 2026-11-11), `merge` for
   what a merge carried to the cluster kept (`merge.MERGED`), and `lattice` for Lattice's app. Where events disagree,
   my latest is the one with the highest `event_id`; `at` bounds time windows and orders nothing (SPEC.md:95-97, 043).
-  The feedback event kinds, from the CHECK at 031:7-11, 061:5-9 and 068:
+  The feedback event kinds, from the CHECK at 031:7-11, 061:5-9, 068 and 069:
   - on clusters: `idea_keep` (payload `as`: `canonical` or `pinned`), `idea_unkeep`, `idea_dismiss` (payload
     `reason`, optional: see Dismissal reason), `idea_add`, `star`, `unstar`, `link`, `unlink`, `idea_note`,
     `idea_correct`, `idea_sensitive`, `idea_distinct`;
   - on themes: `pin_theme`, `unpin_theme`, `rename_theme`, `reject_theme`, `merge_theme`, `split_theme`,
     `file_idea`, `unfile_idea`, `theme_sensitive`;
   - on the app: `demo_on`, `demo_off` (demo mode, the one setting; they name nothing, 068);
+  - on lenses and boards: `lens_add`, `lens_edit`, `lens_state`, `lens_pin` (payload `pin`: `in` or `out`, on a
+    cluster), `lens_unpin`, `board_place`, `board_remove` (each names its lens or board in its payload, 069);
   - legacy, still in the ledger but read by nothing that orders or gates ([0007]): `keep` and `discard` (nothing
     writes these), `item_keep`, `item_discard`, `item_star`, `idea_compare`, `digest_star`, `digest_dismiss`, and `vocab_add`, `vocab_remove`
     (vocabulary suggestions, retired by [0012]).
@@ -501,7 +503,8 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   positions; a lens opened on its own may lay its results out afresh ([0010]:66-69).
 - **Lens.** A stored question about clusters ([0013]): a lens query, lens filters and lens pins. A cluster is in a lens
   if it's pinned in, or it passes the query and the filters and isn't pinned out. A lens writes no connections, and
-  never refers to another lens. **Status:** not built (M5).
+  never refers to another lens. Its members are cards, each with why it's in: `pin` or `query` (`pub.lens_members`,
+  069). **Status:** stored, kinds `all` and `none` (069); `jev` comes with its run.
 - **Lens query.** Whether a cluster fits a lens's meaning: a query of some kind, stored as its kind and parameters,
   that names the clusters worth asking and judges each in or out with a score and a reason. Kinds: `all` (no meaning
   test), `none` (only the pins), and `jev` (a set of questions, a rule combining them, and its own cut). A long one
@@ -509,13 +512,17 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
 - **Judged share.** How much of the map a lens's query has asked about so far ("judged 300 of 3,100"): a run can stop
   at the clusters nearest the definition, and a cluster not yet asked isn't a no ([0013]).
 - **Lens filter.** A condition on stored facts that narrows what a lens's query admits: sensitivity tags, maturity,
-  kept status, recency, recurrence, arousal, who said it ([0013]).
+  kept status, recency, recurrence, arousal, who said it ([0013]). **Status:** maturity, kept status, said by me,
+  sensitive, and when it was said (`im.lens_filters_ok`, 069).
 - **Lens pin.** A cluster I include in a lens or exclude from it by hand, beating the query and the filters. It's
-  anchored to the speech (the pinned capture's segments, or an archive or typed observation's source reference), so
-  it survives the rebuild ([0013]). _Not_ pinning a cluster (kept as pinned) or a pinned lens.
+  anchored to the speech (the segments the cluster was made from, else what I typed, else one capture's segments,
+  else its archive capture's observation; `im.idea_anchor`, 069), so it survives a merge, a re-read and the rebuild,
+  and forgetting that speech forgets it ([0013]). _Not_ pinning a cluster (kept as pinned) or a pinned lens.
 - **Board.** A named set of lenses, each placed where I put it; one level, never a board of boards. A Trellis view
   draws one. Lenses are combined on a board when it's viewed (union, or two intersected), and a filter can apply to
-  all its lenses ([0013]). **Status:** not built (M5).
+  all its lenses ([0013]). **Status:** the Tree (places: the sephirot and the paths by letter) and the Grid
+  (numbered cells), stored (`im.boards`, `im.board_lenses`, 069); a place with no lens shows its stand-in
+  neighborhood. Combining and board filters aren't built.
 - **View from a cluster.** Lighting the sky from one cluster: personalized PageRank from it over connections (each 1
   plus `KIND_WEIGHT` per connection kind) and lineage (both ways), plus its 20 embedding neighbors, weighted by
   similarity (`lens.relevance`, `/sky?seed=`). Not stored, and not a lens ([0013]).
@@ -526,9 +533,9 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
 - **Relevance.** The view from a cluster's number for each cluster, from 0 to 1: how closely the graph and meaning tie
   it to that cluster. The cluster itself is 1, the rest are scaled so the most relevant other is 1 too, and clusters
   it doesn't reach are 0 (`lens.relevance`). _Not_ weight, confidence or value.
-- **Pinned lens, archived lens.** A pinned lens is one I keep at hand. An archived lens is one I've left: never thrown
-  away, but kept with its definition, its cost (what was paid to compute it) and the graph version it read
-  ([0010]:47-49). What a graph version is, is **not yet specified**. **Status:** lens storage isn't built.
+- **Pinned lens, archived lens.** A pinned lens is one I keep at hand (`lens_state` `pinned`, listed first). An
+  archived lens is one I've left: never thrown away, but kept with its definition, its cost (what was paid to
+  compute it) and the graph version it read ([0010]:47-49). What a graph version is, is **not yet specified**.
 - **Subject.** What something is about. A shared subject is what a lens gathers, and is no connection ([0010]
   §Context; `edge_audit.HEADER`, `none`).
 - **Theme.** A stored category of clusters: `im.themes(name, description, origin, pinned)`, with membership in

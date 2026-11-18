@@ -1,4 +1,5 @@
-"""The MCP server (docs/design/m5-lenses-and-mcp.md, slice 1; decision 0005): Lattice's 19 tools, served by `im web`.
+"""The MCP server (docs/design/m5-lenses-and-mcp.md; decision 0005): Lattice's 19 tools and `open_lens`, served by
+`im web`.
 
 Their names, argument schemas and result shapes are the contract (SPEC §2), kept from Lattice's `mcp.py` (lattice
 6def765); what they read is today's `pub`, as role lattice_app, and their one write is appending feedback events with
@@ -13,8 +14,8 @@ shapes Lattice had for nothing scored: `get_idea` has no `ranking`, `draft_mater
 `best_ideas` lists the ideas I kept as canonical, most recently said first, or says there are none.
 
 Demo mode is the app's one setting (pub.app_settings, `im demo`): while it's on, only the nine read tools Lattice's
-demo served exist, what the web view's demo mode hides (pub.demo_hidden_ideas, and themes pub.sensitivity marks
-sensitive) is withheld from every answer, and swearing is blacked out.
+demo served exist, and `open_lens`; what the web view's demo mode hides (pub.demo_hidden_ideas, and themes
+pub.sensitivity marks sensitive) is withheld from every answer, and swearing is blacked out.
 """
 
 import json
@@ -32,8 +33,8 @@ INSTRUCTIONS = """This is the owner's Idea Machine: when they mention Idea Machi
 they've been thinking or saying lately, use these tools. It holds the thoughts Idea Machine captured from their
 recorded conversations (and from what they once typed into a ChatGPT Idea Machine), grouped into clusters, connected
 to each other, each backed by evidence quotes. Speak to the owner as "you". In quotes, "me" is the owner; S1, S2...
-are other people, renumbered in every answer. Search or open a theme before asking the owner for ids. Starring,
-linking and notes are the owner's feedback: do them when they ask, not on your own initiative.
+are other people, renumbered in every answer. Search or open a theme or a lens before asking the owner for ids.
+Starring, linking and notes are the owner's feedback: do them when they ask, not on your own initiative.
 
 When the owner wants to add an idea from your conversation: check similar_ideas with your draft (and search_ideas
 for key words), and if an existing idea says the same, offer a note or a link instead. Otherwise draft a short title
@@ -268,6 +269,27 @@ def open_theme(conn, theme: str) -> dict:
     ideas = conn.execute(f"""SELECT {BRIEF} FROM pub.ideas WHERE %s = ANY(themes)
                              ORDER BY starred DESC, n_evidence DESC, title""", (name,)).fetchall()
     return {"id": str(tid), "name": name, "description": description, "ideas": [_brief(r) for r in ideas]}
+
+
+def open_lens(conn, lens: str, limit: int = 50) -> dict:
+    """A lens the owner made (decision 0013), by name or id: what it holds, how much of the map its query has judged,
+    and its ideas, each with why it's in (the owner's pin, or the query and its score), pinned first, then the most
+    recently said."""
+    from im import lens as lenses
+
+    try:
+        x = lenses.find(conn, lens)
+    except ValueError as e:
+        raise ToolError(str(e)) from None
+    asked, of = lenses.judged(conn, x)
+    rows = conn.execute("""SELECT i.idea_id, i.title, i.statement, i.themes, i.n_evidence, i.starred, i.created_at,
+                                  m.why, m.score
+                           FROM pub.lens_members m JOIN pub.ideas i USING (idea_id) JOIN pub.cards c USING (idea_id)
+                           WHERE m.lens_id = %s ORDER BY m.why = 'pin' DESC, c.last_seen DESC, m.idea_id LIMIT %s""",
+                        (x["id"], max(1, min(int(limit), 200)))).fetchall()
+    return {"id": x["id"], "name": x["name"], "description": x["description"], "query": lenses.describe(x),
+            "state": x["state"], "judged": {"asked": asked, "of": of},
+            "ideas": [_brief(r[:7]) | {"why": r[7], "score": r[8]} for r in rows]}
 
 
 MAX_DRAFT_IDEAS = 40
@@ -611,13 +633,18 @@ TOOLS = {
     "note_idea": (note_idea, False, "Set the owner's context note on an idea (replaces the old one; empty clears "
                   "it). Only when the owner asks.",
                   {"idea_id": ID, "note": {"type": "string", "maxLength": 1000}}, ["idea_id", "note"]),
+    "open_lens": (open_lens, True, "The ideas in one of the owner's lenses (a view they made: a query, filters and "
+                  "their own pins), each with why it's in, pinned first; and how much of the map the lens has judged. "
+                  "An unknown name answers with the lenses there are.",
+                  {"lens": {"type": "string", "description": "A lens's name (or part of it) or id"},
+                   "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50}}, ["lens"]),
 }
 
 
 # --- Demo mode -----------------------------------------------------------------------------------------------
 
 DEMO_TOOLS = ("search_ideas", "get_idea", "best_ideas", "list_themes", "open_theme", "whats_new", "weekly_digest",
-              "similar_ideas", "draft_material")
+              "similar_ideas", "draft_material", "open_lens")
 DEMO_INSTRUCTIONS = """This is a read-only view of the owner's Idea Machine, curated for showing it to other people:
 thoughts captured from the owner's recorded conversations, grouped and connected. Some ideas and themes are
 withheld and swearing is blacked out; don't speculate about or mention what might be missing. Speak to the owner as
