@@ -53,6 +53,9 @@ NEAR_POOL = 50  # the highest-scoring cards a lens left out, that its near misse
 SHEET_SEED = 15
 SPLIT = "lens-split-1"   # salts `half`: changing it moves cards between the halves
 HALVES = ("dev", "held")
+# A review answer is a label and one line, reasoning included: OpenRouter refuses a request whose output budget the
+# remaining credit can't cover, so the default (llm.MAX_TOKENS) would strand the last dollar.
+REVIEW_MAX_TOKENS = 4000
 MARKS = {"in": "in", "i": "in", "out": "out", "o": "out", "?": "unsure", "u": "unsure"}
 RULES = ("max", "mean")
 _ID = re.compile(r"^[a-z][a-z0-9]{0,15}$")
@@ -412,7 +415,7 @@ def review(conn, client, embedder, folder: Path, model: str, effort: str = "low"
             try:
                 a = egress.ask(conn, client, model, effort, system, REVIEW_SCHEMA, _shown(now[i]["item"]),
                                segment_ids=egress.segments_of(conn, [i]), prompt_version=f"lens-review:{pv}",
-                               monthly_cap_usd=monthly_cap_usd)
+                               monthly_cap_usd=monthly_cap_usd, max_tokens=REVIEW_MAX_TOKENS)
             except llm.Stop as e:
                 stats["stopped"] = str(e)[:200]
                 break
