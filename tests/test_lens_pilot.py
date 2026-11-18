@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from im import egress, jev, lens_audit
+from im import egress, jev, lens_audit, llm
 
 from helpers import HashEmbedder, table
 from test_review import as_web_role
@@ -128,3 +128,73 @@ def test_the_sheet_is_blind_and_my_marks_score_each_stratum(seeded_lattice, fold
     assert got["disagree"]["baseline_only"]["share"] == (0.0 if by["baseline_only"] else None)
     assert got["near_misses_in"]["of"] == max(len(by["near"]) - 1, 0)
     assert s["unmarked"] == [] and s["unreadable"] == ({by["near"][0]: "maybe"} if by["near"] else {})
+
+
+class Reviewer:
+    """A model reached through OpenRouter, putting in every card that mentions `word`, and out the rest."""
+
+    def __init__(self, word):
+        self.word, self.texts = word, []
+
+    def complete(self, model, effort, system, schema, text, max_tokens, max_price=None):
+        self.texts.append(text)
+        answer = {"label": "in" if self.word in text.lower() else "out", "why": "says so"}
+        return llm.Reply(json.dumps(answer), "end_turn", model, "req", 300, 20, 0.001)
+
+
+def copied(folder, to):
+    to.mkdir()
+    for f in ("lenses.json", "draft.json"):
+        (to / f).write_text((folder / f).read_text())
+    return to
+
+
+@pytest.fixture
+def split(seeded_lattice, monkeypatch):
+    """The fixture's cards split by title, since their ids, which the real split goes by, differ every run."""
+    dev = {"Broken builds as signal", "A solitary unsatisfying grape.", "Something new"}
+    halves = {c["id"]: "dev" if c["item"]["title"] in dev else "held" for c in lens_audit.cards(seeded_lattice)}
+    monkeypatch.setattr(lens_audit, "half", halves.__getitem__)
+    return halves
+
+
+def test_a_model_reviews_the_dev_half_once_per_description(seeded_lattice, split, folder, tmp_path):
+    pipe = seeded_lattice
+    lens_audit.draft(pipe, fake_jev("build")[0], folder)
+    first = copied(folder, tmp_path / "round-1")   # rounds side by side, their labels kept beside them
+    reviewer, model = Reviewer("grape"), "openai/gpt-6.1-terra"
+    with pytest.raises(SystemExit, match="another model reviews them"):
+        lens_audit.review(pipe, reviewer, HashEmbedder(), first, "jev-1.14.0")
+    out = lens_audit.review(pipe, reviewer, HashEmbedder(), first, model, lens_ids=["coffee"])
+    cards = {c["id"]: c for c in lens_audit.cards(pipe)}
+    shown = {lens_audit._shown(cards[i]["item"]): i for i in cards}
+    assert {split[shown[t]] for t in reviewer.texts} == {"dev"} and out["asked"] == len(reviewer.texts)
+
+    # Jev let in the dev card about a build, the reviewer only the one about a grape: no member holds, and the
+    # grape, left out, is listed as put in.
+    got = out["lenses"]["coffee"]
+    assert got["members"] == 1 and (got["precision"]["in"], got["precision"]["of"]) == (0, 1)
+    assert got["near_misses_in"]["in"] + got["disagree"]["baseline_only"]["in"] == 1 and got["unlabeled"] == 0
+    put_out, left_in = (first / "review.md").read_text().split("### Left out, put in")
+    assert "Broken builds as signal" in put_out and "solitary unsatisfying grape" in left_in
+
+    # A new round under the same description asks nothing; a reworded description asks again.
+    again = copied(first, tmp_path / "round-2")
+    assert lens_audit.review(pipe, reviewer, HashEmbedder(), again, model, lens_ids=["coffee"])["asked"] == 0
+    spec = json.loads((again / "lenses.json").read_text())
+    spec["lenses"][0]["description"] = "Coffee, and who drinks it."
+    (again / "lenses.json").write_text(json.dumps(spec))
+    assert lens_audit.review(pipe, reviewer, HashEmbedder(), again, model, lens_ids=["coffee"])["asked"] == out["asked"]
+
+
+def test_a_held_sheet_draws_only_held_cards_no_earlier_sheet_showed(seeded_lattice, split, folder, tmp_path):
+    pipe = seeded_lattice
+    lens_audit.draft(pipe, fake_jev("signal")[0], folder)
+    first = copied(folder, tmp_path / "first")
+    lens_audit.sheet(pipe, HashEmbedder(), first, ["coffee"], half_="held")
+    seen = lens_audit.shown_on([first])
+    assert seen and {split[i] for i in seen} == {"held"}
+    later = copied(folder, tmp_path / "later")
+    lens_audit.sheet(pipe, HashEmbedder(), later, ["coffee"], half_="held", exclude=seen)
+    key = json.loads((later / "sheet-key.json").read_text())
+    assert key["excluded"] == len(seen) and key["lenses"]["coffee"]["items"] == {}

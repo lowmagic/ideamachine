@@ -214,6 +214,15 @@ private, and reach `im` as data (`im lens import FILE`, 0013); nothing in this r
 lens's wordings about every card, from a `lenses.json` kept in saved/, and reports what each lens lets in and the
 cards near its cut, to reword from. Nothing it writes is a lens.
 
+**Reworked with a model, before I see them** (decided 2026-11-17, after the first sheet was mostly marked by a
+model, so it judged nothing): the cards are split in two halves, fixed by id (`lens_audit.half`). On the **dev**
+half, a model stands in for me (`im audit-lens review`): it labels, by each lens's description alone, every card the
+lens's numbers rest on (its members, the baseline's cards, the near pool), with no sampling, and review.md lists
+where it and the lens disagree. Wordings are reworked round by round against its numbers. Labels are kept by
+description and card, so a round that keeps the descriptions asks only about new cards. My sheet is drawn from the
+**held** half, leaving out cards an earlier sheet showed, so it never judges wordings fitted to its own cards. The
+model is never Jev.
+
 Judged twice, both bars registered in im-evals before any run, and my use kept apart from both. One blind sheet per
 lens (`im audit-lens sheet`), 30 cards drawn by seed and shuffled, nothing saying which is which, each marked in, out
 or can't tell (decided 2026-11-14: 10 a stratum to start, 150 marks for five lenses):

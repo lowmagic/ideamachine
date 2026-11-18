@@ -433,9 +433,17 @@ def cmd_audit_lens(args) -> None:
             if not args.lenses:
                 raise SystemExit("sheet needs --lenses, the ids of the lenses it judges, e.g. --lenses a,b")
             _print(lens_audit.sheet(conn, lattice.SentenceEmbedder(cfg.lattice.embedding_model), folder,
-                                    args.lenses.split(",")))
+                                    args.lenses.split(","), half_=args.half,
+                                    exclude=lens_audit.shown_on([Path(f) for f in args.exclude])))
             return
         cap = cfg.extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
+        if args.action == "review":
+            from im import llm
+
+            _print(lens_audit.review(conn, llm.client_for(args.model, cfg.egress.zdr),
+                                     lattice.SentenceEmbedder(cfg.lattice.embedding_model), folder, args.model,
+                                     args.effort, args.lenses.split(",") if args.lenses else None, cap))
+            return
         _print(lens_audit.draft(conn, jev.Jev(), folder, args.limit, cap))
 
 
@@ -895,15 +903,21 @@ def main(argv=None) -> None:
     ael.set_defaults(func=cmd_audit_eligibility)
     alp = sub.add_parser("audit-lens", help="the lens pilot: Jev answers lens wordings (lenses.json in the folder, "
                          "never in the repo) about every card; report says what each lets in (draft sends to Jev)")
-    alp.add_argument("action", choices=["draft", "report", "sheet", "score"],
+    alp.add_argument("action", choices=["draft", "report", "review", "sheet", "score"],
                      help="draft: ask Jev about every card not answered yet; report: per lens, what passes its cut, "
-                          "and near-cut.md; sheet: the blind sheet for --lenses; score: my marks on it (only draft "
-                          "sends)")
+                          "and near-cut.md; review: a model labels the dev half's cards each lens rests on, in my "
+                          "place, and review.md lists where it and the lens disagree; sheet: the blind sheet for "
+                          "--lenses; score: my marks on it (draft and review send)")
     alp.add_argument("folder", help="where lenses.json is and the draft goes (it quotes me: keep it in saved/)")
     alp.add_argument("--limit", type=int, help="draft: ask at most this many cards (a smoke run)")
-    alp.add_argument("--lenses", help="sheet: the ids of the lenses it judges, comma-separated")
-    alp.add_argument("--monthly-cap-usd", type=float, help="draft: send nothing once the month's spend reaches this "
-                     "(default: config)")
+    alp.add_argument("--lenses", help="sheet: the ids of the lenses it judges, comma-separated; review: only these")
+    alp.add_argument("--half", choices=["dev", "held"],
+                     help="sheet: draw only from this half of the cards (held, for the sheet that judges)")
+    alp.add_argument("--exclude", nargs="*", default=[], help="sheet: leave out cards these earlier sheets showed")
+    alp.add_argument("--model", default="claude-opus-5-5", help="review: the model standing in for me")
+    alp.add_argument("--effort", default="low", help="review: its effort")
+    alp.add_argument("--monthly-cap-usd", type=float, help="draft, review: send nothing once the month's spend "
+                     "reaches this (default: config)")
     alp.set_defaults(func=cmd_audit_lens)
     for name, question, what in (
             ("audit-analogies", "analogy", "a blind sheet of possible analogies between unrelated ideas, ranked by "
