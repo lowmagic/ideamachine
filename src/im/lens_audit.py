@@ -20,13 +20,16 @@ only cards I said (`pub.cards.by_me`).
 2. `report`: sends nothing. Per lens: the cards asked, how many pass the cut, the spread of its probability, how
    closely its deciding wordings rank cards alike, each probe beside it, and the members it shares with each other
    lens; and near-cut.md, the cards just either side of each cut, for me to read and reword. It quotes me: saved/.
-3. `sheet`: sends nothing. The blind sheet that judges the lenses named (M5 design, "The canonical lenses"), from
+3. `review`: while wordings are reworked, a model stands in for me, on the dev half of the cards only (`half`):
+   it labels every card each lens's numbers rest on by the description alone, and from its labels, over all of
+   them, gives what `score` gives from my marks; and review.md, every card it and the lens disagree on.
+4. `sheet`: sends nothing. The blind sheet that judges the lenses named (M5 design, "The canonical lenses"), from
    the draft's answers: for each, SHEET_N of its members, SHEET_N of the embedding baseline's members it left out
    (the baseline: the cards nearest its description by embedding, as many as it has members), and SHEET_N of the
    NEAR_POOL highest-scoring cards it left out other than the baseline's, drawn by seed, shuffled together under the
    lens's name and description, nothing saying which is which. I mark each in, out or ?. Which is which is in
-   sheet-key.json.
-4. `score`: from my marks, per lens: precision among its members (Wilson 95%), the baseline's precision weighted by
+   sheet-key.json. Drawn from the held half (`--half held`), it judges wordings never fitted to its cards.
+5. `score`: from my marks, per lens: precision among its members (Wilson 95%), the baseline's precision weighted by
    its two parts (members it shares with the lens, and those it alone has), the two compared where they disagree,
    and how many near misses I put in. N with each.
 """
@@ -39,7 +42,7 @@ from pathlib import Path
 
 import numpy as np
 
-from im import egress, jev, llm, sensitivity
+from im import egress, jev, llm, sensitivity, themes
 from im.eligibility_audit import wilson
 
 SEED = 14
@@ -48,6 +51,8 @@ TOP = 10        # a lens's highest cards on near-cut.md
 SHEET_N = 10    # cards per stratum on a lens's sheet
 NEAR_POOL = 50  # the highest-scoring cards a lens left out, that its near misses are drawn from
 SHEET_SEED = 15
+SPLIT = "lens-split-1"   # salts `half`: changing it moves cards between the halves
+HALVES = ("dev", "held")
 MARKS = {"in": "in", "i": "in", "out": "out", "o": "out", "?": "unsure", "u": "unsure"}
 RULES = ("max", "mean")
 _ID = re.compile(r"^[a-z][a-z0-9]{0,15}$")
@@ -275,9 +280,40 @@ def _shown(item: dict) -> str:
     return "\n".join(lines).rstrip()
 
 
-def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_SEED) -> dict:
+def half(idea_id: str) -> str:
+    """Which half of the cards one is in, fixed by its id: `dev`, where wordings are reworked with a model reviewing
+    them, or `held`, which my sheet is drawn from, so it never judges wordings fitted to its own cards."""
+    return HALVES[int(hashlib.sha256(f"{SPLIT}:{idea_id}".encode()).hexdigest(), 16) % 2]
+
+
+def _live(conn, folder: Path) -> tuple[dict, dict, dict]:
+    """The draft, every card now, and the draft's answers about cards whose text is still what Jev was shown."""
+    path = folder / "draft.json"
+    if not path.exists():
+        raise SystemExit(f"{path} is missing: run draft first")
+    got = json.loads(path.read_text())
+    now = {c["id"]: c for c in cards(conn)}
+    return got, now, {i: a["p"] for i, a in got["cards"].items() if i in now and now[i]["sha"] == a["sha"]}
+
+
+def _strata(conn, embedder, lens: dict, live: dict, keep) -> dict:
+    """The lens over the cards `keep` lets in: each card's probability, its members, the embedding baseline (as many
+    cards as it has members) and every card's similarity, the baseline's own (the baseline's cards it left out), and
+    the near pool (the NEAR_POOL highest-scoring cards it left out other than the baseline's, so none overlap)."""
+    p = {i: x for i, a in live.items() if keep(i) and (x := _p(lens, a)) is not None}
+    members = sorted(i for i, x in p.items() if x >= lens["cut"])
+    base, sim = baseline(conn, embedder, lens["description"], sorted(p), len(members))
+    only = sorted(set(base) - set(members))
+    pool = sorted((i for i in p if i not in members and i not in only), key=lambda i: (-p[i], i))[:NEAR_POOL]
+    return {"p": p, "members": members, "base": base, "sim": sim, "only": only, "pool": pool}
+
+
+def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_SEED, half_: str | None = None,
+          exclude: frozenset[str] = frozenset()) -> dict:
     """Write sheet.md and sheet-key.json for the lenses named, from the draft's answers. Only cards whose text is
-    still what Jev was shown are drawn. Never written over: marks would no longer match."""
+    still what Jev was shown are drawn; with `half_`, only cards in that half, and never a card in `exclude` (cards
+    an earlier sheet showed). Each lens's members and baseline are counted over those cards alone. Never written
+    over: marks would no longer match."""
     spec = load(folder)
     path, kpath = folder / "sheet.md", folder / "sheet-key.json"
     if path.exists() or kpath.exists():
@@ -285,38 +321,142 @@ def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_S
     lenses = {lens["id"]: lens for lens in spec["lenses"]}
     if unknown := [i for i in lens_ids if i not in lenses]:
         raise SystemExit(f"no lens {', '.join(unknown)} in {folder / 'lenses.json'}")
-    got = json.loads((folder / "draft.json").read_text())
-    now = {c["id"]: c for c in cards(conn)}
-    live = {i: a["p"] for i, a in got["cards"].items() if i in now and now[i]["sha"] == a["sha"]}
+    got, now, live = _live(conn, folder)
     rng = random.Random(seed)
-    lines, key = [SHEET_HEADER], {"seed": seed, "version": got["version"], "lenses": {}}
+    lines = [SHEET_HEADER]
+    key = {"seed": seed, "version": got["version"], "half": half_, "excluded": len(exclude), "lenses": {}}
     for lid in lens_ids:
         lens = lenses[lid]
-        p = {i: x for i, a in live.items() if (x := _p(lens, a)) is not None}
-        members = sorted(i for i, x in p.items() if x >= lens["cut"])
-        base, sim = baseline(conn, embedder, lens["description"], sorted(p), len(members))
-        only = sorted(set(base) - set(members))
-        # The near misses: the highest-scoring cards the lens left out, other than the baseline's own, so the three
-        # strata don't overlap.
-        pool = sorted((i for i in p if i not in members and i not in only), key=lambda i: (-p[i], i))[:NEAR_POOL]
-        drawn = [(i, "member") for i in rng.sample(members, min(SHEET_N, len(members)))]
-        drawn += [(i, "baseline_only") for i in rng.sample(only, min(SHEET_N, len(only)))]
-        drawn += [(i, "near") for i in rng.sample(pool, min(SHEET_N, len(pool)))]
+        s = _strata(conn, embedder, lens, live, lambda i: (half_ is None or half(i) == half_) and i not in exclude)
+        drawn = [(i, "member") for i in rng.sample(s["members"], min(SHEET_N, len(s["members"])))]
+        drawn += [(i, "baseline_only") for i in rng.sample(s["only"], min(SHEET_N, len(s["only"])))]
+        drawn += [(i, "near") for i in rng.sample(s["pool"], min(SHEET_N, len(s["pool"])))]
         rng.shuffle(drawn)
         items = {}
         lines += [f"# {lens['name']}", "", lens["description"], ""]
         for n, (i, stratum) in enumerate(drawn, 1):
             num = f"{lid}-{n}"
-            items[num] = {"idea_id": i, "stratum": stratum, "p": round(p[i], 4),
-                          "similarity": round(sim.get(i, 0.0), 4), "in_baseline": i in base}
+            items[num] = {"idea_id": i, "stratum": stratum, "p": round(s["p"][i], 4),
+                          "similarity": round(s["sim"].get(i, 0.0), 4), "in_baseline": i in s["base"]}
             lines += [f"## {num}", "", _shown(now[i]["item"]), "", "mark: ", ""]
-        key["lenses"][lid] = {"name": lens["name"], "cut": lens["cut"], "asked": len(p), "members": len(members),
-                              "baseline": len(base), "overlap": len(set(base) & set(members)),
-                              "baseline_only": len(only), "near_pool": len(pool), "items": items}
+        key["lenses"][lid] = {"name": lens["name"], "cut": lens["cut"], "asked": len(s["p"]),
+                              "members": len(s["members"]), "baseline": len(s["base"]),
+                              "overlap": len(set(s["base"]) & set(s["members"])), "baseline_only": len(s["only"]),
+                              "near_pool": len(s["pool"]), "items": items}
     path.write_text("\n".join(lines))
     kpath.write_text(json.dumps(key, indent=1))
     return {"sheet": str(path), **{lid: {k: v for k, v in s.items() if k != "items"} | {"drawn": len(s["items"])}
                                    for lid, s in key["lenses"].items()}}
+
+
+def shown_on(folders: list[Path]) -> frozenset[str]:
+    """The cards earlier sheets showed, from their keys."""
+    return frozenset(it["idea_id"] for f in folders
+                     for s in json.loads((f / "sheet-key.json").read_text())["lenses"].values()
+                     for it in s["items"].values())
+
+
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {"label": {"type": "string", "enum": ["in", "out", "unsure"]}, "why": {"type": "string"}},
+    "required": ["label", "why"], "additionalProperties": False,
+}
+
+REVIEW_SYSTEM = """You judge whether a card belongs in a lens. The cards are ideas from my recorded conversations; a \
+lens is a view over them, defined by its name and description:
+
+Lens: {name}
+{description}
+
+You're shown one card: its title, a statement of the idea, sometimes my note, and what was said. Judge it by the \
+lens's description alone, as I would reading it: `in` if it belongs, `out` if it doesn't, `unsure` only when the card \
+doesn't say enough to tell. A card that touches the lens's subject only in passing is out. Say why in one short line."""
+
+
+def _review_path(folder: Path, model: str, effort: str) -> Path:
+    """Where a reviewer's labels are kept: beside the round folders, not in one, since a label depends only on the
+    lens's description and the card, and so carries over to every round that keeps the description."""
+    return folder.parent / f"lens-review-{model.replace('/', '_')}-{effort}.json"
+
+
+def review(conn, client, embedder, folder: Path, model: str, effort: str = "low", lens_ids: list[str] | None = None,
+           monthly_cap_usd: float = 20.0) -> dict:
+    """A model stands in for me while wordings are reworked, on the dev half only. It labels in, out or unsure, by
+    the lens's description alone, every card the lens's numbers rest on: its members, the embedding baseline's
+    cards and the near pool. Each request is the description and one card, shown as my sheet shows it, through the
+    egress log under the monthly cap; labels are kept by description and card text, so a new round asks only about
+    cards it hasn't seen. Then, per lens, over every labeled card (no sampling): precision among its members, the
+    baseline's precision, the two where they disagree, and the near misses put in; and review.md, every card the
+    reviewer and the lens disagree on, with its reason, to reword from. It quotes me: saved/."""
+    if model.startswith("jev"):
+        raise SystemExit(f"{model}: Jev's answers are what's reviewed, so another model reviews them")
+    spec = load(folder)
+    lenses = [lens for lens in spec["lenses"] if lens_ids is None or lens["id"] in lens_ids]
+    if lens_ids and (unknown := set(lens_ids) - {lens["id"] for lens in lenses}):
+        raise SystemExit(f"no lens {', '.join(sorted(unknown))} in {folder / 'lenses.json'}")
+    _, now, live = _live(conn, folder)
+    path = _review_path(folder, model, effort)
+    store = json.loads(path.read_text()) if path.exists() else {"model": model, "effort": effort, "prompts": {}}
+    plans = []
+    for lens in lenses:
+        system = REVIEW_SYSTEM.format(name=lens["name"], description=lens["description"])
+        pv = themes.version(system, REVIEW_SCHEMA, model, effort)
+        labels = store["prompts"].setdefault(pv, {"lens": lens["id"], "description": lens["description"],
+                                                  "labels": {}})["labels"]
+        plans.append((lens, system, pv, labels, _strata(conn, embedder, lens, live, lambda i: half(i) == "dev")))
+    stats = {"labels": str(path), "asked": 0, "failed": 0, "cost_usd": 0.0, "stopped": None}
+    for lens, system, pv, labels, s in plans:
+        todo = [i for i in sorted({*s["members"], *s["base"], *s["pool"]})
+                if labels.get(i, {}).get("sha") != now[i]["sha"]]
+        for i in todo:
+            try:
+                a = egress.ask(conn, client, model, effort, system, REVIEW_SCHEMA, _shown(now[i]["item"]),
+                               segment_ids=egress.segments_of(conn, [i]), prompt_version=f"lens-review:{pv}",
+                               monthly_cap_usd=monthly_cap_usd)
+            except llm.Stop as e:
+                stats["stopped"] = str(e)[:200]
+                break
+            stats["asked"] += 1
+            stats["cost_usd"] += a.cost_usd
+            if a.failed:
+                stats["failed"] += 1
+                continue
+            labels[i] = {"sha": now[i]["sha"]} | ({"label": "unsure", "why": "(refused)"} if a.refused
+                                                  else {"label": a.data["label"], "why": a.data["why"]})
+            path.write_text(json.dumps(store, indent=1))
+        if stats["stopped"]:
+            break
+    path.write_text(json.dumps(store, indent=1))
+    stats["cost_usd"] = round(stats["cost_usd"], 6)
+    out, lines = stats | {"lenses": {}}, ["# Lens review: where the reviewer and the lens disagree", "",
+                                         f"Dev half only. Reviewer: {model} ({effort}).", ""]
+    for lens, _, _, labels, s in plans:
+        label = {i: x["label"] for i, x in labels.items() if i in now and x["sha"] == now[i]["sha"]}
+
+        def rate(ids, label=label):
+            return _rate([label[i] for i in ids if i in label])
+
+        members, base = set(s["members"]), set(s["base"])
+        out["lenses"][lens["id"]] = {
+            "name": lens["name"], "dev_cards": len(s["p"]), "members": len(members),
+            "unlabeled": len((members | base | set(s["pool"])) - set(label)),
+            "precision": rate(members), "baseline_precision": rate(base),
+            "disagree": {"lens_only": rate(members - base), "baseline_only": rate(s["only"])},
+            "near_misses_in": rate(s["pool"])}
+
+        def row(i, labels=labels, s=s):
+            item = now[i]["item"]
+            return (f"- {s['p'][i]:.2f} {labels[i]['label']}: **{item['title']}**: {item['statement']} "
+                    f"_({labels[i]['why']})_")
+
+        put_out = sorted((i for i in members if label.get(i, "in") != "in"), key=lambda i: -s["p"][i])
+        left_in = sorted((i for i in {*s["only"], *s["pool"]} if label.get(i) == "in"), key=lambda i: -s["p"][i])
+        lines += [f"## {lens['id']}: {lens['name']}", "", lens["description"], "",
+                  "### Members it put out or couldn't tell", ""] + [row(i) for i in put_out] + [
+                  "", "### Left out, put in", ""] + [row(i) for i in left_in] + [""]
+    (folder / "review.md").write_text("\n".join(lines))
+    (folder / "review.json").write_text(json.dumps(out, indent=1))
+    return out
 
 
 def marks(text: str) -> dict[str, str]:
