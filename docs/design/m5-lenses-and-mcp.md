@@ -251,7 +251,12 @@ One PR each, in order:
 Six, chosen 2026-11-14, each a `jev` lens, pinned: three topics (what a card is about) and three questions (what
 I'd ask of the map). Their names, descriptions and Jev questions are personal, so they live in im-evals, which is
 private, and reach `im` as data (`im lens import FILE`, 0013); nothing in this repo names them. ROADMAP-v2 asks for
-5 judged useful, so M5 is done when 5 of the 6 pass.
+5 judged useful, so M5 was to be done when 5 of the 6 pass.
+
+**Five, after the second sheet** (decided 2026-11-18, im-evals' round 2 result): four passed both bars. I dropped one
+question, unmarked, as a filter I wouldn't use. One topic failed both bars, and a new topic takes its place, one I
+have a lot of content about, reworked on the dev half like the others and judged on a sheet of its own. M5 is done
+when all five pass. The four that passed stand: the new sheet judges only the new lens.
 
 **Tried first,** before the sheets: a pilot (`im audit-lens`, with its own pre-registration) has Jev answer every
 lens's wordings about every card, from a `lenses.json` kept in saved/, and reports what each lens lets in and the
