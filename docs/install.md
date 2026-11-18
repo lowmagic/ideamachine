@@ -140,6 +140,13 @@ part of now), and an edit with no field. Every stage that reads the card's text 
 the next run, not a version change, so the re-read gate doesn't hold it. After a merge, `im idea show KEEP` prints
 the title and statement each merged cluster had, to fold its detail into KEEP's with `im idea edit`.
 
+A card's edit page in the web view (`/idea/<id>/edit`, linked from the card) corrects the same title, statement and
+note, with the same limits, source `emanation`, writing only what changed. It also corrects each capture's reading
+(at most 2000 characters, an empty one reverting to Claude's) as an `item_reading` event. My reading counts for every
+capture of that occurrence, so a re-read keeps it. The card shows it folded under the quote, and the matcher reads
+it for captures it hasn't matched yet. Jev never sees readings: it gets the title, statement, my note and the
+quotes. Correcting a reading is not a verdict, so the capture stays in `im ideas --review`.
+
 `im merges` is the merge screen (B9m). Its pairs are the open `merge_review` rows (`duplicate`, `judged_same`) and
 the pairs the connection judge nominates (one definition of near), both still cards, leaving out pairs I unlinked
 or marked distinct (`im merge --distinct`). Jev (`jev.MODEL`) answers the matcher's `same_v2` ("is `a` another way of

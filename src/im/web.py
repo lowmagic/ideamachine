@@ -151,8 +151,8 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
     r = rows[0]
     if demo and r["redacted"]:
         return _page("Hidden", f"<h1>Hidden in demo mode</h1><small>{_e(_facts(r))}</small>")
-    quotes = _rows(conn, f"""SELECT speaker, quote, said_at FROM {v}card_evidence WHERE idea_id = %s
-                             ORDER BY said_at, item_id""", (idea_id,))
+    quotes = _rows(conn, f"""SELECT speaker, quote, said_at, reading, claude_reading FROM {v}card_evidence
+                             WHERE idea_id = %s ORDER BY said_at, item_id""", (idea_id,))
     links = _rows(conn, f"""SELECT l.kind, l.kinds, c.idea_id, c.title FROM pub.card_links l
                             JOIN {v}cards c ON c.idea_id = CASE WHEN l.a = %s THEN l.b ELSE l.a END
                             WHERE %s IN (l.a, l.b) {shown} ORDER BY l.kind, c.title""", (idea_id, idea_id))
@@ -169,12 +169,14 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
     body = [f"<h1>{_e(r['title'])}</h1><p>{_e(r['statement'])}</p><small>{_e(_facts(r))}</small>",
             "" if demo else f'<form method="post" action="/idea/{idea_id}">{buttons}</form>{_why(idea_id, near)}',
             f'<p><a href="/sky?seed={idea_id}">Light the sky from here</a> · '
-            f'<a href="/trails?at={idea_id}">Its trail</a> · <a href="/crossroads/{idea_id}">Its crossroads</a></p>']
+            f'<a href="/trails?at={idea_id}">Its trail</a> · <a href="/crossroads/{idea_id}">Its crossroads</a>'
+            + ("" if demo else f' · <a href="/idea/{idea_id}/edit">Edit</a>') + "</p>"]
     if r["my_note"]:
         body.append(f"<h2>My note</h2><p>{_e(r['my_note'])}</p>")
     body.append("<h2>Said</h2><ol>" + "".join(
-        f"<li><blockquote>{_e(q['quote'])}</blockquote><small>{_e(SPEAKERS.get(q['speaker'], q['speaker']))} · "
-        f"{_when(q['said_at'])}</small></li>" for q in quotes) + "</ol>" if quotes else "")
+        f"<li><blockquote>{_e(q['quote'])}</blockquote>{_reading(q)}<small>"
+        f"{_e(SPEAKERS.get(q['speaker'], q['speaker']))} · {_when(q['said_at'])}</small></li>" for q in quotes)
+        + "</ol>" if quotes else "")
     body.append("<h2>Connections</h2><ul>" + "".join(
         f'<li>{_e(", ".join([x["kind"], *x["kinds"]]))}: <a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a></li>'
         for x in links) + "</ul>" if links else "")
@@ -186,6 +188,83 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
         for x in near) + "</ul>" if near else "")
     body.append(_card_lenses(conn, idea_id, demo))
     return _page(r["title"], "".join(body))
+
+
+def _reading(q: dict) -> str:
+    """A capture's reading, folded away under its quote; marked when it's mine."""
+    if not q["reading"]:
+        return ""
+    mine = " (mine)" if q["reading"] != q["claude_reading"] else ""
+    return f"<details><summary>reading{mine}</summary><p>{_e(q['reading'])}</p></details>"
+
+
+READING_MAX = 2000   # as migration 072 allows
+EDIT_FORM_MAX = 1 << 18   # the edit page's form holds every capture's reading, URL-encoded
+
+
+def _norm(text: str) -> str:
+    return text.replace("\r\n", "\n").strip()
+
+
+def edit_page(conn, idea_id: str) -> str | None:
+    """/idea/<id>/edit: a card's title, statement and my note, and each capture's reading under its quote, to
+    correct. None if there's no such card."""
+    from im.idea import LIMITS
+
+    rows = _rows(conn, "SELECT title, statement, my_note FROM pub.cards WHERE idea_id = %s", (idea_id,))
+    if not rows:
+        return None
+    r = rows[0]
+    said = _rows(conn, """SELECT item_id, speaker, quote, said_at, reading, claude_reading FROM pub.card_evidence
+                          WHERE idea_id = %s AND item_id IS NOT NULL ORDER BY said_at, item_id""", (idea_id,))
+
+    def area(name: str, text: str | None, limit: int, rows: int = 4) -> str:
+        return f'<textarea name="{name}" maxlength="{limit}" rows="{rows}" cols="80">{_e(text or "")}</textarea>'
+
+    readings = "".join(
+        f"<li><blockquote>{_e(q['quote'])}</blockquote><small>{_e(SPEAKERS.get(q['speaker'], q['speaker']))} · "
+        f"{_when(q['said_at'])}</small><br>{area('reading:' + str(q['item_id']), q['reading'], READING_MAX)}"
+        + (f"<br><small>Claude's: {_e(q['claude_reading'] or '')}</small>"
+           if q["reading"] != q["claude_reading"] else "") + "</li>" for q in said)
+    body = (f'<h1>Edit</h1><p class="lede">An empty field goes back to Claude\'s; an empty note is no note. '
+            f'<a href="/idea/{idea_id}">Back to the card</a></p>'
+            f'<form method="post" action="/idea/{idea_id}/edit">'
+            f'<p><label>Title<br><input name="title" maxlength="{LIMITS["title"]}" size="80" '
+            f'value="{_e(r["title"] or "")}"></label></p>'
+            f'<p><label>Statement<br>{area("statement", r["statement"], LIMITS["statement"])}</label></p>'
+            f'<p><label>My note<br>{area("note", r["my_note"], LIMITS["note"], 3)}</label></p>'
+            + (f"<h2>Readings</h2><p>Each capture's quote repaired and resolved. Mine counts for every capture of "
+               f"the same moment, and the matcher reads it.</p><ol>{readings}</ol>" if said else "")
+            + "<p><button>Save</button></p></form>")
+    return _page(f"Edit: {r['title']}", body)
+
+
+def correct(conn, idea_id: str, form: dict) -> None:
+    """The edit page's corrections as my events, only what changed: one idea_correct with the title and statement,
+    an idea_note for my note, an item_reading for each capture's reading. An empty field reverts to Claude's (no
+    note, for the note). ValueError, writing nothing, for no such card, a field too long, or a capture not on it."""
+    from im.idea import LIMITS
+
+    rows = _rows(conn, "SELECT title, statement, my_note FROM pub.cards WHERE idea_id = %s", (idea_id,))
+    if not rows:
+        raise ValueError("no such card")
+    now = {"title": rows[0]["title"] or "", "statement": rows[0]["statement"] or "", "note": rows[0]["my_note"] or ""}
+    given = {k: _norm(form[k]) for k in now if k in form}
+    readings = {k.removeprefix("reading:"): _norm(v) for k, v in form.items() if k.startswith("reading:")}
+    held = {str(i): x or "" for i, x in conn.execute(
+        "SELECT item_id, reading FROM pub.card_evidence WHERE idea_id = %s AND item_id IS NOT NULL", (idea_id,))}
+    if any(len(v) > LIMITS[k] for k, v in given.items()) or any(
+            i not in held or len(v) > READING_MAX for i, v in readings.items()):
+        raise ValueError("a field too long, or a capture not on this card")
+    fixed = {k: v for k, v in given.items() if k != "note" and v != now[k]}
+    events = [("idea_correct", idea_id, None, fixed)] if fixed else []
+    if "note" in given and given["note"] != now["note"]:
+        events.append(("idea_note", idea_id, None, {"note": given["note"]}))
+    events += [("item_reading", None, i, {"reading": v}) for i, v in readings.items() if v != held[i]]
+    with conn.transaction():
+        for kind, idea, item, payload in events:
+            conn.execute("""INSERT INTO pub.feedback_events (kind, idea_id, item_id, payload, source)
+                            VALUES (%s, %s, %s, %s, 'emanation')""", (kind, idea, item, json.dumps(payload)))
 
 
 def _card_lenses(conn, idea_id: str, demo: bool) -> str:
@@ -1125,10 +1204,11 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _form(self) -> dict:
-        """The first value of each field; every value of each is kept in `_lists`, for a form's checkboxes."""
+    def _form(self, limit: int = 4096, keep_blank: bool = False) -> dict:
+        """The first value of each field; every value of each is kept in `_lists`, for a form's checkboxes. Read up to
+        `limit` bytes; `keep_blank` keeps empty fields, for a form where clearing one means something."""
         n = int(self.headers.get("Content-Length") or 0)
-        self._lists = parse_qs(self.rfile.read(min(n, 4096)).decode())
+        self._lists = parse_qs(self.rfile.read(min(n, limit)).decode(), keep_blank_values=keep_blank)
         return {k: v[0] for k, v in self._lists.items()}
 
     def _send_static(self, path: str) -> None:
@@ -1190,6 +1270,12 @@ class Handler(BaseHTTPRequestHandler):
             if url.path == "/crossroads":   # anywhere: a card at random
                 to = anywhere(conn, demo)
                 return self._send(303, headers={"Location": f"/crossroads/{to}" if to else "/"})
+            edit = re.fullmatch(r"/idea/([0-9a-f-]{36})/edit", url.path)
+            if edit and _UUID.match(edit[1]):
+                if demo:
+                    return self._send(403, _page("Demo mode", "Nothing can be changed in demo mode."))
+                body = edit_page(conn, edit[1])
+                return self._send(200, body) if body else self._send(404, _page("Not found", "Not found."))
             m = re.fullmatch(r"/(idea|crossroads|lens)/([0-9a-f-]{36})", url.path)
             if m and m[1] == "lens" and _UUID.match(m[2]):
                 page = int(q["page"]) if q.get("page", "").isdigit() else 0
@@ -1202,7 +1288,10 @@ class Handler(BaseHTTPRequestHandler):
         url = urlsplit(self.path)
         if url.path == "/mcp":
             return self._mcp()
-        form = self._form()
+        edit = re.fullmatch(r"/idea/([0-9a-f-]{36})/edit", url.path)
+        if edit and int(self.headers.get("Content-Length") or 0) > EDIT_FORM_MAX:
+            return self._send(413, _page("Too long", "That's more than a card's edit page can hold."))
+        form = self._form(EDIT_FORM_MAX, keep_blank=True) if edit else self._form()
         if url.path == "/login":
             if hmac.compare_digest(form.get("token", "").encode(), _token().encode()):
                 secure = "; Secure" if self.headers.get("X-Forwarded-Proto") == "https" else ""
@@ -1223,6 +1312,15 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(303, headers={"Location": "/"})
         if self._lens_writes(url.path, form):
             return
+        if edit and _UUID.match(edit[1]):
+            with psycopg.connect(self.dsn, autocommit=True) as conn:
+                if self._demo(conn):
+                    return self._send(403, _page("Demo mode", "Nothing can be changed in demo mode."))
+                try:
+                    correct(conn, edit[1], form)
+                except ValueError:
+                    return self._send(400, _page("Bad request", "Bad request."))
+            return self._send(303, headers={"Location": f"/idea/{edit[1]}"})
         m = re.fullmatch(r"/idea/([0-9a-f-]{36})", url.path)
         if not (m and _UUID.match(m[1]) and form.get("action") in ACTIONS):
             return self._send(400, _page("Bad request", "Bad request."))

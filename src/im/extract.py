@@ -332,8 +332,9 @@ def forgotten_sent(conn) -> list[tuple]:
 
 
 def review_items(conn) -> list[tuple]:
-    """Captures on current episodes I haven't decided on yet, one per observation (a verdict or feedback on any of
-    its captures decides it, migration 037): (item, said by, quote, gist, segments, said at, episode), newest first."""
+    """Captures on current episodes I haven't decided on yet, one per observation (a verdict, or a verdict event, on
+    any of its captures decides it, migrations 037 and 072; my reading doesn't): (item, said by, quote, gist,
+    segments, said at, episode), newest first."""
     return conn.execute(
         """SELECT * FROM (
              SELECT DISTINCT ON (coalesce(i.observation_id, i.item_id))
@@ -341,7 +342,8 @@ def review_items(conn) -> list[tuple]:
              FROM im.items i JOIN im.item_said_by w USING (item_id) JOIN im.episodes e USING (episode_id)
              WHERE e.current AND NOT EXISTS (SELECT 1 FROM im.capture_verdict v WHERE v.item_id = i.item_id)
                AND NOT EXISTS (SELECT 1 FROM im.items s JOIN pub.feedback_events f ON f.item_id = s.item_id
-                               WHERE s.item_id = i.item_id OR s.observation_id = i.observation_id)
+                               WHERE (s.item_id = i.item_id OR s.observation_id = i.observation_id)
+                                 AND f.kind IN ('item_keep', 'item_discard', 'item_star'))
              ORDER BY coalesce(i.observation_id, i.item_id), i.created_at, i.item_id) r
            ORDER BY started_at DESC, item_id""").fetchall()
 
