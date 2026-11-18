@@ -24,11 +24,12 @@ only cards I said (`pub.cards.by_me`).
    it labels every card each lens's numbers rest on by the description alone, and from its labels, over all of
    them, gives what `score` gives from my marks; and review.md, every card it and the lens disagree on.
 4. `sheet`: sends nothing. The blind sheet that judges the lenses named (M5 design, "The canonical lenses"), from
-   the draft's answers: for each, SHEET_N of its members, SHEET_N of the embedding baseline's members it left out
-   (the baseline: the cards nearest its description by embedding, as many as it has members), and SHEET_N of the
-   NEAR_POOL highest-scoring cards it left out other than the baseline's, drawn by seed, shuffled together under the
-   lens's name and description, nothing saying which is which. I mark each in, out or ?. Which is which is in
-   sheet-key.json. Drawn from the held half (`--half held`), it judges wordings never fitted to its cards.
+   the draft's answers: for each, SHEET_N of its members (or `--members`), SHEET_N of the embedding baseline's
+   members it left out (the baseline: the cards nearest its description by embedding, as many as it has members),
+   and SHEET_N of the NEAR_POOL highest-scoring cards it left out other than the baseline's, drawn by seed,
+   shuffled together under the lens's name and description, nothing saying which is which. I mark each in, out or
+   ?. Which is which is in sheet-key.json. Drawn from the held half (`--half held`), it judges wordings never fitted
+   to its cards.
 5. `score`: from my marks, per lens: precision among its members (Wilson 95%), the baseline's precision weighted by
    its two parts (members it shares with the lens, and those it alone has), the two compared where they disagree,
    and how many near misses I put in. N with each.
@@ -312,11 +313,11 @@ def _strata(conn, embedder, lens: dict, live: dict, keep) -> dict:
 
 
 def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_SEED, half_: str | None = None,
-          exclude: frozenset[str] = frozenset()) -> dict:
-    """Write sheet.md and sheet-key.json for the lenses named, from the draft's answers. Only cards whose text is
-    still what Jev was shown are drawn; with `half_`, only cards in that half, and never a card in `exclude` (cards
-    an earlier sheet showed). Each lens's members and baseline are counted over those cards alone. Never written
-    over: marks would no longer match."""
+          exclude: frozenset[str] = frozenset(), members: int = SHEET_N) -> dict:
+    """Write sheet.md and sheet-key.json for the lenses named, from the draft's answers: `members` of each lens's
+    members, SHEET_N of each other stratum. Only cards whose text is still what Jev was shown are drawn; with
+    `half_`, only cards in that half, and never a card in `exclude` (cards an earlier sheet showed). Each lens's
+    members and baseline are counted over those cards alone. Never written over: marks would no longer match."""
     spec = load(folder)
     path, kpath = folder / "sheet.md", folder / "sheet-key.json"
     if path.exists() or kpath.exists():
@@ -327,11 +328,12 @@ def sheet(conn, embedder, folder: Path, lens_ids: list[str], seed: int = SHEET_S
     got, now, live = _live(conn, folder)
     rng = random.Random(seed)
     lines = [SHEET_HEADER]
-    key = {"seed": seed, "version": got["version"], "half": half_, "excluded": len(exclude), "lenses": {}}
+    key = {"seed": seed, "version": got["version"], "half": half_, "excluded": len(exclude), "members_drawn": members,
+           "lenses": {}}
     for lid in lens_ids:
         lens = lenses[lid]
         s = _strata(conn, embedder, lens, live, lambda i: (half_ is None or half(i) == half_) and i not in exclude)
-        drawn = [(i, "member") for i in rng.sample(s["members"], min(SHEET_N, len(s["members"])))]
+        drawn = [(i, "member") for i in rng.sample(s["members"], min(members, len(s["members"])))]
         drawn += [(i, "baseline_only") for i in rng.sample(s["only"], min(SHEET_N, len(s["only"])))]
         drawn += [(i, "near") for i in rng.sample(s["pool"], min(SHEET_N, len(s["pool"])))]
         rng.shuffle(drawn)
