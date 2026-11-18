@@ -3,7 +3,8 @@ layer, can leave out what I'd rather not show (the `demo` schema).
 
 Jev answers one yes or no per tag (jev.QUESTIONS["sensitivity"]) about each shown idea (title, statement, the
 archive's notes and my note, my corrections winning, and up to three of its quotes, since swearing is usually in what
-was said) and each lens, shown as the theme it's listed as (name and description; themes became lenses in M5). A
+was said, with my readings of those I corrected) and each lens, shown as the theme it's listed as (name and
+description; themes became lenses in M5). A
 shown idea is any presentation's: in pub.ideas or on a card, which also shows a cluster whose every capture I
 discarded. A tag holds at CUT or above, and Jev's probabilities are kept beside the tags, so the cut can be set later
 from my own marks. The tags describe; pub.sensitivity counts anything with a tag as sensitive, and my own marks
@@ -36,7 +37,7 @@ def _key(item: dict) -> tuple[str, str]:
     if "theme" in item:
         return "theme", _hash(item["theme"], item.get("description", ""))
     return "idea", _hash(item["title"], item["statement"], item.get("notes", ""), item.get("my_note", ""),
-                         item.get("said", []))
+                         item.get("said", []), *([item["my_readings"]] if "my_readings" in item else []))
 
 
 def _todo(conn, tv: str) -> tuple[list[tuple], list[tuple]]:
@@ -44,14 +45,20 @@ def _todo(conn, tv: str) -> tuple[list[tuple], list[tuple]]:
     split by the re-read gate: (to tag, held), held being those tagged under another version for the same text, with
     that version after the hash."""
     rows = [("idea", i, {"title": t, "statement": st} | ({"notes": n} if n else {}) | ({"my_note": m} if m else {})
-             | ({"said": q} if q else {}), h, v) for i, t, st, n, m, q, h, v in conn.execute(
+             | ({"said": q} if q else {}) | ({"my_readings": r} if r else {}), h, v)
+            for i, t, st, n, m, q, r, h, v in conn.execute(
             """SELECT d.idea_id, x.title, x.statement, coalesce(d.notes, ''), coalesce(x.my_note, ''),
                       ARRAY(SELECT left(ce.quote, 200) FROM pub.card_evidence ce WHERE ce.idea_id = d.idea_id
-                            ORDER BY ce.said_at, ce.item_id LIMIT %s),
+                            ORDER BY ce.said_at, ce.item_id LIMIT %(quotes)s),
+                      ARRAY(SELECT y.mine FROM (
+                              SELECT CASE WHEN ce.reading IS DISTINCT FROM ce.claude_reading
+                                          THEN left(ce.reading, 400) END AS mine
+                              FROM pub.card_evidence ce WHERE ce.idea_id = d.idea_id
+                              ORDER BY ce.said_at, ce.item_id LIMIT %(quotes)s) y WHERE y.mine IS NOT NULL),
                       s.input_hash, s.tagger_version
                FROM im.ideas d JOIN im.idea_text x USING (idea_id) LEFT JOIN im.idea_sensitivity s USING (idea_id)
                WHERE d.idea_id IN (SELECT idea_id FROM pub.ideas UNION SELECT idea_id FROM pub.cards)
-               ORDER BY d.created_at, d.idea_id""", (QUOTES,))]
+               ORDER BY d.created_at, d.idea_id""", {"quotes": QUOTES})]
     rows += [("theme", i, {"theme": n} | ({"description": d} if d else {}), h, v) for i, n, d, h, v in conn.execute(
         """SELECT l.lens_id, l.name, l.description, s.input_hash, s.tagger_version
            FROM im.lenses l LEFT JOIN im.lens_sensitivity s USING (lens_id) WHERE l.state <> 'archived'

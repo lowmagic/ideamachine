@@ -65,10 +65,11 @@ def show(conn, ref: str) -> str:
     return "\n".join(out)
 
 
-def edit(conn, ref: str, title: str | None = None, statement: str | None = None, note: str | None = None) -> str:
-    """Correct a card: one idea_correct event with the fields given, and an idea_note if a note is given. An empty
-    value reverts to Claude's original (no note, for the note). Raises ValueError, writing nothing, for an unknown or
-    merged-away cluster, no field, or a field too long."""
+def edit(conn, ref: str, title: str | None = None, statement: str | None = None, note: str | None = None,
+         meaning_changed: bool = False) -> str:
+    """Correct a card: one idea_correct event with the fields given and my mark of whether the meaning changed, and
+    an idea_note if a note is given. An empty value reverts to Claude's original (no note, for the note). Raises
+    ValueError, writing nothing, for an unknown or merged-away cluster, no field, or a field too long."""
     given = {k: v.strip() for k, v in (("title", title), ("statement", statement), ("note", note)) if v is not None}
     if not given:
         raise ValueError("nothing to change: give --title, --statement or --note")
@@ -79,10 +80,62 @@ def edit(conn, ref: str, title: str | None = None, statement: str | None = None,
         idea = find(conn, ref)
         before = _text(conn, idea)
         correct = {k: v for k, v in given.items() if k != "note"}
-        events = ([("idea_correct", correct)] if correct else []) + (
+        events = ([("idea_correct", correct | {"meaning_changed": meaning_changed})] if correct else []) + (
             [("idea_note", {"note": given["note"]})] if "note" in given else [])
         for kind, payload in events:
             conn.execute("""INSERT INTO pub.feedback_events (kind, idea_id, payload, source)
                             VALUES (%s, %s, %s, %s)""", (kind, idea, json.dumps(payload), SOURCE))
         after = _text(conn, idea)
     return "\n".join([str(idea), "before:", *_card(*before[:3]), "after:", *_card(*after[:3])])
+
+
+MARKS = {True: "meaning changed", False: "wording only", None: "unmarked"}
+
+
+def corrections(conn) -> str:
+    """The error log: every card whose title or statement I corrected, and every capture whose reading I corrected,
+    Claude's beside mine, with my mark of whether the meaning changed; and, for each, the connections the judge asked
+    about again since, each verdict as it stood before then and as it stands now. Counts first."""
+    cards: dict = {}
+    for idea, title, claude_title, statement, claude_statement, mark, first in conn.execute(
+            """SELECT x.idea_id, x.title, x.claude_title, x.statement, x.claude_statement,
+                      (SELECT (f.payload->>'meaning_changed')::boolean FROM pub.feedback_events f
+                       WHERE f.idea_id = x.idea_id AND f.kind = 'idea_correct' ORDER BY f.event_id DESC LIMIT 1),
+                      (SELECT min(f.at) FROM pub.feedback_events f
+                       WHERE f.idea_id = x.idea_id AND f.kind = 'idea_correct')
+               FROM im.idea_text x JOIN pub.cards c USING (idea_id)
+               WHERE x.title IS DISTINCT FROM x.claude_title OR x.statement IS DISTINCT FROM x.claude_statement
+               ORDER BY 7"""):
+        c = cards.setdefault(idea, {"title": title, "first": first, "fixes": []})
+        c["fixes"] += [(f, mark, theirs, mine) for f, theirs, mine in (("title", claude_title, title),
+                                                                       ("statement", claude_statement, statement))
+                       if theirs != mine]
+    for idea, title, quote, claude_reading, reading, mark, at in conn.execute(
+            """SELECT ce.idea_id, c.title, ce.quote, r.claude_reading, r.reading, r.meaning_changed, r.corrected_at
+               FROM pub.card_evidence ce JOIN im.item_reading r USING (item_id) JOIN pub.cards c USING (idea_id)
+               WHERE r.corrected ORDER BY r.corrected_at, ce.item_id"""):
+        c = cards.setdefault(idea, {"title": title, "first": at, "fixes": []})
+        c["first"] = min(c["first"], at)
+        c["fixes"].append((f"reading of \u201c{quote}\u201d", mark, claude_reading, reading))
+    asked = {}
+    for idea, c in cards.items():
+        asked[idea] = conn.execute(
+            """SELECT DISTINCT ON (r.a, r.b) r.verdict, v.verdict, o.title
+               FROM im.connection_verdicts_replaced r JOIN im.connection_verdicts v USING (a, b)
+               JOIN im.idea_text o ON o.idea_id = CASE WHEN r.a = %(i)s THEN r.b ELSE r.a END
+               WHERE %(i)s IN (r.a, r.b) AND r.replaced_at >= %(at)s
+               ORDER BY r.a, r.b, r.replaced_at""", {"i": idea, "at": c["first"]}).fetchall()
+    fixes = [f for c in cards.values() for f in c["fixes"]]
+    marks = {label: sum(MARKS[f[1]] == label for f in fixes) for label in MARKS.values()}
+    pairs = [p for ps in asked.values() for p in ps]
+    out = [f"{len(fixes)} corrections on {len(cards)} cards: " + ", ".join(f"{n} {k}" for k, n in marks.items())
+           + f". Connections asked again since: {len(pairs)}, {sum(old != new for old, new, _ in pairs)} changed."]
+    for idea, c in sorted(cards.items(), key=lambda kv: kv[1]["first"]):
+        out += ["", f"{str(idea)[:8]}  {c['title']}  (first corrected {c['first'].astimezone():%Y-%m-%d})"]
+        for what, mark, theirs, mine in c["fixes"]:
+            out += [f"  {what} [{MARKS[mark]}]", f"    Claude's: {theirs or ''}", f"    mine:     {mine}"]
+        changed = [(old, new, other) for old, new, other in asked[idea] if old != new]
+        if asked[idea]:
+            out.append(f"  connections asked again: {len(asked[idea])}, {len(changed)} changed")
+            out += [f"    {old} -> {new}: {other}" for old, new, other in changed]
+    return "\n".join(out)

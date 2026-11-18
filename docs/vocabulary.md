@@ -299,7 +299,14 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   (`/idea/<id>/edit`, source `emanation`); Lattice did until 2026-11-11.
 - **My reading.** An `item_reading` event that replaces a capture's reading, or reverts it with an empty value,
   written from a card's edit page (072). My latest on any capture of an occurrence counts for every capture of it
-  (`im.item_reading`), so a re-read keeps it; the card shows it, folded under the quote, and the matcher reads it.
+  (`im.item_reading`), so a re-read keeps it. The card shows it folded under the quote. The judges see it as mine:
+  "My reading" for the connection judge, `my_readings` for the lens questions and the sensitivity tagger. The
+  matcher reads it too.
+- **My summary.** A card's title and statement as the connection judge sees them once I've corrected them, or typed
+  the idea, in place of "Claude's summary" (`connect.side_data`).
+- **Meaning changed.** My mark on a correction (`idea_correct`, `item_reading`; payload `meaning_changed`) that it
+  fixed what the card or quote means (a mishearing, a meaning turned around), not only its wording. It decides
+  nothing, since every correction is judged again; `im corrections` (the error log) sorts by it.
 - **Feedback event.** A recorded action or judgment of mine (`pub.feedback_events`, 008:88-98). `source` says where I
   made it: `cli`, `emanation` or `mcp` (the MCP server, `im.mcp`, since M5; Lattice's until 2026-11-11), `merge` for
   what a merge carried to the cluster kept (`merge.MERGED`), and `lattice` for Lattice's app. Where events disagree,

@@ -29,19 +29,24 @@ from im import egress, jev, lens, llm, reread, sensitivity
 NEAREST = 300   # what `im lens run` asks without --all: the cards nearest the lens's description
 PER_RUN = 500   # what `im run` asks of each lens at most
 
+# A card's first quotes, and my readings of those I corrected (none: the card as it was before readings could be).
 CARDS = """
 SELECT c.idea_id::text, c.title, c.statement, coalesce(c.my_note, ''), c.by_me > 0,
        ARRAY(SELECT left(ce.quote, 200) FROM pub.card_evidence ce WHERE ce.idea_id = c.idea_id AND ce.quote IS NOT NULL
-             ORDER BY ce.said_at, ce.item_id LIMIT %s)
+             ORDER BY ce.said_at, ce.item_id LIMIT %(quotes)s),
+       ARRAY(SELECT x.mine FROM (
+               SELECT CASE WHEN ce.reading IS DISTINCT FROM ce.claude_reading THEN left(ce.reading, 400) END AS mine
+               FROM pub.card_evidence ce WHERE ce.idea_id = c.idea_id AND ce.quote IS NOT NULL
+               ORDER BY ce.said_at, ce.item_id LIMIT %(quotes)s) x WHERE x.mine IS NOT NULL)
 FROM pub.cards c ORDER BY c.idea_id"""
 
 
 def cards(conn) -> list[dict]:
     """Every card as Jev is shown it, with whether I said it and its text's hash."""
     out = []
-    for idea, title, statement, note, by_me, said in conn.execute(CARDS, (sensitivity.QUOTES,)):
+    for idea, title, statement, note, by_me, said, mine in conn.execute(CARDS, {"quotes": sensitivity.QUOTES}):
         item = ({"title": title, "statement": statement} | ({"my_note": note} if note else {})
-                | ({"said": said} if said else {}))
+                | ({"said": said} if said else {}) | ({"my_readings": mine} if mine else {}))
         out.append({"id": idea, "by_me": by_me, "item": item,
                     "sha": hashlib.sha256(json.dumps(item, sort_keys=True).encode()).hexdigest()})
     return out

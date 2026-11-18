@@ -707,9 +707,18 @@ def cmd_idea(args) -> None:
     with db.connect(db.pipeline_dsn()) as conn:
         try:
             print(idea.show(conn, args.id) if args.action == "show"
-                  else idea.edit(conn, args.id, args.title, args.statement, args.note))
+                  else idea.edit(conn, args.id, args.title, args.statement, args.note, args.meaning_changed))
         except ValueError as e:
             raise SystemExit(f"im idea {args.action}: {e}") from None
+
+
+def cmd_corrections(args) -> None:
+    """The error log: what I corrected, Claude's beside mine, marked by whether the meaning changed, and what judging
+    the corrected cards again changed (idea.corrections)."""
+    from im import idea
+
+    with db.connect(db.pipeline_dsn()) as conn:
+        print(idea.corrections(conn))
 
 
 def cmd_ideas(args) -> None:
@@ -1056,7 +1065,12 @@ def main(argv=None) -> None:
     ied.add_argument("--title", help="at most 120 characters")
     ied.add_argument("--statement", help="at most 1000 characters")
     ied.add_argument("--note", help="my note, at most 1000 characters")
+    ied.add_argument("--meaning-changed", action="store_true",
+                     help="mark the correction as changing what it means (a mishearing, a meaning turned around), "
+                          "not only its wording: what `im corrections` sorts the errors by")
     ie.set_defaults(func=cmd_idea)
+    sub.add_parser("corrections", help="the error log: every correction, Claude's beside mine, marked by whether the "
+                   "meaning changed, and the connections judged again since").set_defaults(func=cmd_corrections)
     ln = sub.add_parser("lens", help="the lenses: list them; show one with its cards and why each is in; run a jev "
                         "lens (sends to Jev); import lenses from a lenses.json")
     ln.add_argument("action", nargs="?", default="list", choices=["list", "show", "run", "import"])

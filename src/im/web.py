@@ -234,15 +234,19 @@ def edit_page(conn, idea_id: str) -> str | None:
             f'<p><label>Statement<br>{area("statement", r["statement"], LIMITS["statement"])}</label></p>'
             f'<p><label>My note<br>{area("note", r["my_note"], LIMITS["note"], 3)}</label></p>'
             + (f"<h2>Readings</h2><p>Each capture's quote repaired and resolved. Mine counts for every capture of "
-               f"the same moment, and the matcher reads it.</p><ol>{readings}</ol>" if said else "")
-            + "<p><button>Save</button></p></form>")
+               f"the same moment.</p><ol>{readings}</ol>" if said else "")
+            + '<p><label><input type="checkbox" name="meaning_changed" value="yes"> The meaning changed: a '
+              "mishearing, or what it says turned around (not only the wording)</label></p>"
+            "<p><small>Every correction counts at once, and the card goes back in the judges' queues.</small></p>"
+            "<p><button>Save</button></p></form>")
     return _page(f"Edit: {r['title']}", body)
 
 
 def correct(conn, idea_id: str, form: dict) -> None:
     """The edit page's corrections as my events, only what changed: one idea_correct with the title and statement,
-    an idea_note for my note, an item_reading for each capture's reading. An empty field reverts to Claude's (no
-    note, for the note). ValueError, writing nothing, for no such card, a field too long, or a capture not on it."""
+    an idea_note for my note, an item_reading for each capture's reading; the corrections carry my mark of whether
+    the meaning changed (`meaning_changed`). An empty field reverts to Claude's (no note, for the note). ValueError,
+    writing nothing, for no such card, a field too long, or a capture not on it."""
     from im.idea import LIMITS
 
     rows = _rows(conn, "SELECT title, statement, my_note FROM pub.cards WHERE idea_id = %s", (idea_id,))
@@ -256,11 +260,12 @@ def correct(conn, idea_id: str, form: dict) -> None:
     if any(len(v) > LIMITS[k] for k, v in given.items()) or any(
             i not in held or len(v) > READING_MAX for i, v in readings.items()):
         raise ValueError("a field too long, or a capture not on this card")
+    meaning = {"meaning_changed": form.get("meaning_changed") == "yes"}
     fixed = {k: v for k, v in given.items() if k != "note" and v != now[k]}
-    events = [("idea_correct", idea_id, None, fixed)] if fixed else []
+    events = [("idea_correct", idea_id, None, fixed | meaning)] if fixed else []
     if "note" in given and given["note"] != now["note"]:
         events.append(("idea_note", idea_id, None, {"note": given["note"]}))
-    events += [("item_reading", None, i, {"reading": v}) for i, v in readings.items() if v != held[i]]
+    events += [("item_reading", None, i, {"reading": v} | meaning) for i, v in readings.items() if v != held[i]]
     with conn.transaction():
         for kind, idea, item, payload in events:
             conn.execute("""INSERT INTO pub.feedback_events (kind, idea_id, item_id, payload, source)

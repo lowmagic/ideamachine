@@ -585,14 +585,14 @@ def test_a_card_and_its_readings_are_corrected_from_its_edit_page(served, matche
 
     title = table(matched, "SELECT title FROM pub.cards WHERE idea_id = %s", build)[0][0]
     form = {"title": title, "statement": "Builds break on Fridays.", "note": "",
-            f"reading:{item}": "Builds keep\r\nbreaking. "}
+            f"reading:{item}": "Builds keep\r\nbreaking. ", "meaning_changed": "yes"}
     for _ in range(2):   # the second adds nothing: nothing changed
         status, headers, _ = request(served, "POST", f"/idea/{build}/edit", urlencode(form), cookie)
         assert (status, headers["Location"]) == (303, f"/idea/{build}")
     assert table(matched, """SELECT kind, payload FROM pub.feedback_events
                              WHERE kind IN ('idea_correct', 'idea_note', 'item_reading') ORDER BY event_id""") == [
-        ("idea_correct", {"statement": "Builds break on Fridays."}),
-        ("item_reading", {"reading": "Builds keep\nbreaking."})]
+        ("idea_correct", {"statement": "Builds break on Fridays.", "meaning_changed": True}),
+        ("item_reading", {"reading": "Builds keep\nbreaking.", "meaning_changed": True})]
     card = request(served, "GET", f"/idea/{build}", cookie=cookie)[2]
     assert "Builds break on Fridays." in card
     assert "<summary>reading (mine)</summary><p>Builds keep\nbreaking.</p>" in card

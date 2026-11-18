@@ -181,6 +181,34 @@ def test_a_pair_is_asked_once_until_its_text_changes_or_i_approve_a_new_method(n
     assert set(table(nearby, "SELECT DISTINCT method FROM im.connection_verdicts")) == {(connect.method(),)}
 
 
+def test_a_corrected_card_is_judged_again_as_mine_and_the_error_log_shows_what_changed(nearby, monkeypatch):
+    from im import idea as cards, observations
+
+    observations.assign_stage(nearby)   # what was said, as the judge is shown it
+    judge(nearby)
+    build = idea(nearby, "Broken builds")
+    quote = connect.side_data(nearby, build)["said"][0]["words"]
+    item = table(nearby, "SELECT item_id FROM pub.card_evidence WHERE idea_id = %s AND quote = %s", build, quote)[0][0]
+    monkeypatch.setattr(connect, "FLOOR", 2.0)   # nothing nominated now: the judge's connections are asked anyway
+    event = "INSERT INTO pub.feedback_events (kind, idea_id, item_id, payload) VALUES (%s, %s, %s, %s)"
+    nearby.execute(event, ("idea_correct", build, None,
+                           json.dumps({"statement": "Builds never break.", "meaning_changed": True})))
+    nearby.execute(event, ("item_reading", None, item,
+                           json.dumps({"reading": "Builds never break on Fridays.", "meaning_changed": True})))
+    stats, _, terra_sent = judge(nearby, answer=lambda text: "tension" if "never break on Fridays" in text
+                                 else "related")
+    involved = {p for p in verdicts(nearby) if build in p}
+    assert stats["nominated"] == 0 and stats["asked"] == len(terra_sent) == len(involved)
+    assert all("My reading: Builds never break on Fridays." in t and "My summary: " in t for t in terra_sent)
+    assert {verdicts(nearby)[p] for p in involved} == {"tension"}
+    assert table(nearby, "SELECT DISTINCT verdict FROM im.connection_verdicts_replaced") == [("related",)]
+    log = cards.corrections(nearby)
+    assert log.startswith("2 corrections on 1 cards: 2 meaning changed, 0 wording only, 0 unmarked.")
+    assert f"Connections asked again since: {len(involved)}, {len(involved)} changed." in log
+    assert "    Claude's: " in log and "    mine:     Builds never break on Fridays." in log
+    assert "related -> tension" in log
+
+
 def test_none_unsure_and_a_refusal_remove_the_connection_and_relate_doesnt_restore_it(nearby, monkeypatch):
     judge(nearby)   # Terra connects every pair
     monkeypatch.setattr(connect, "SCREEN_CUT", 0.5)

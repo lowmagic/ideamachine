@@ -30,13 +30,14 @@ def test_a_corrected_statement_is_on_the_card_and_is_changed_input(seeded_lattic
     coffee = idea(conn, "coffee")
     title, statement = cards(conn)[coffee][:2]
 
-    out = im_idea("edit", str(coffee)[:8], "--statement", "The tea order is the real meeting.", "--note", "office")
+    out = im_idea("edit", str(coffee)[:8], "--statement", "The tea order is the real meeting.", "--note", "office",
+                  "--meaning-changed")
 
     assert out.index(statement) < out.index("after:") < out.index("The tea order is the real meeting.")
     assert cards(conn)[coffee][:2] == (title, "The tea order is the real meeting.")
     assert table(conn, """SELECT kind, payload, source FROM pub.feedback_events WHERE idea_id = %s
                           ORDER BY event_id""", coffee) == [
-        ("idea_correct", {"statement": "The tea order is the real meeting."}, "cli"),
+        ("idea_correct", {"statement": "The tea order is the real meeting.", "meaning_changed": True}, "cli"),
         ("idea_note", {"note": "office"}, "cli")]
     stats = sensitivity.tag_stage(conn, client)   # the changed card alone, sent again; nothing held
     assert (stats["tagged"], len(sent), stats.get("held")) == (1, n + 1, None)
