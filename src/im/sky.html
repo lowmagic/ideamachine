@@ -3,47 +3,90 @@
 <link rel="manifest" href="/manifest.webmanifest"><link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="theme-color" content="#070910">
 <style>
-:root { --bg: #070910; --fg: #e8eaf2; --muted: #9aa0b4; --panel: rgba(20, 23, 34, .92); --accent: #9db8ff; }
+:root { --bg: #070910; --fg: #e8eaf2; --muted: #9aa0b4; --panel: rgba(20, 23, 34, .92); --accent: #9db8ff;
+  --line: rgba(255, 255, 255, .12); }
 html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); overflow: hidden;
   font: 15px/1.45 system-ui, sans-serif; -webkit-user-select: none; user-select: none; }
 canvas { display: block; width: 100vw; height: 100vh; touch-action: none; cursor: grab; }
-nav { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; gap: 8px 14px;
-  flex-wrap: wrap; pointer-events: none; }
+nav { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; right: 16px; display: flex; gap: 8px 10px;
+  flex-wrap: wrap; align-items: center; pointer-events: none; }
 nav > * { pointer-events: auto; }
 button { font: inherit; color: var(--accent); background: var(--panel); border: 0; padding: 4px 10px; border-radius: 6px;
   cursor: pointer; }
 button[aria-pressed=true] { color: var(--bg); background: var(--accent); }
-/* Replay's bar: play or pause, the time, and the day it shows. */
-#time { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); max-width: 40rem;
-  margin: 0 auto; background: var(--panel); border-radius: 10px; padding: 8px 12px; display: flex; gap: 12px;
-  align-items: center; }
-#time[hidden] { display: none; }
-#time input { flex: 1; min-width: 0; accent-color: var(--accent); } #time span { color: var(--muted); font-size: 13px;
-  white-space: nowrap; font-variant-numeric: tabular-nums; }
-body.replaying #bar { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 56px); }
+button:focus-visible, a:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 nav a, #bar a { color: var(--accent); text-decoration: none; }
 nav a { background: var(--panel); padding: 4px 10px; border-radius: 6px; }
-#bar { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); max-width: 40rem;
+#scope { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 10px;
+  display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--fg); max-width: 100%; }
+#scope[hidden], nav > [hidden], #time[hidden], #slice[hidden] { display: none; }
+#scope b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 16rem; }
+#scope small { color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+#hops { display: inline-flex; gap: 2px; align-items: center; color: var(--muted); font-size: 12.5px; }
+#hops[hidden] { display: none; }
+#hops button { padding: 1px 6px; font-size: 12.5px; border-radius: 4px; background: rgba(255, 255, 255, .06);
+  color: var(--muted); }
+#hops button[aria-pressed=true] { background: var(--accent); color: var(--bg); }
+/* Replay's bar and the time-slice bar: along the bottom, pushing #bar above whichever is open. */
+#time, #slice { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom));
+  max-width: 44rem; margin: 0 auto; background: var(--panel); border-radius: 10px; padding: 8px 12px; display: flex;
+  gap: 8px 12px; align-items: center; flex-wrap: wrap; }
+#time input[type=range] { flex: 1; min-width: 0; accent-color: var(--accent); }
+#time span, #slice span { color: var(--muted); font-size: 13px; white-space: nowrap; font-variant-numeric: tabular-nums; }
+#slice label { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--muted); }
+#slice input[type=date] { font: inherit; font-size: 13px; color: var(--fg); background: rgba(255, 255, 255, .07);
+  border: 1px solid var(--line); border-radius: 5px; padding: 2px 6px; color-scheme: dark; }
+.dual { position: relative; flex: 1 1 11rem; height: 22px; display: flex; align-items: center; }
+.dual input[type=range] { position: absolute; left: 0; width: 100%; margin: 0; pointer-events: none;
+  -webkit-appearance: none; appearance: none; background: none; height: 4px; }
+.dual input[type=range]:first-child { background: rgba(255, 255, 255, .16); border-radius: 2px; }
+.dual input[type=range]::-webkit-slider-thumb { pointer-events: auto; -webkit-appearance: none; width: 14px;
+  height: 14px; border-radius: 50%; background: var(--accent); border: 2px solid var(--bg); cursor: ew-resize; }
+.dual input[type=range]::-moz-range-thumb { pointer-events: auto; width: 14px; height: 14px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg); cursor: ew-resize; }
+body.replaying #bar { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 56px); }
+body.slicing #bar { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 64px); }
+@media (max-width: 640px) { body.slicing #bar { bottom: calc(max(16px, env(safe-area-inset-bottom)) + 98px); } }
+#bar { position: fixed; left: 16px; right: 16px; bottom: max(16px, env(safe-area-inset-bottom)); max-width: 44rem;
   margin: 0 auto; background: var(--panel); border-radius: 10px; padding: 12px 14px; display: none; }
 #bar b { display: block; } #bar small { color: var(--muted); display: block; margin: 2px 0 8px; }
-#bar a { margin-right: 16px; }
+#bar .actions { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
+#bar a { padding: 2px 0; }
 </style>
-<nav><a href="/">Feed</a><a href="/trails">Trails</a><a href="/echoes">Echoes</a><a href="/threads">Threads</a><a href="/tree">Tree</a
-><a href="/grid">Grid</a><button id="replay" aria-pressed="false" title="Watch the archive grow from its first day">Replay</button
+<nav><a href="/">Feed</a><a href="/trails">Trails</a><a href="/echoes">Echoes</a><a href="/threads">Threads</a
+><a href="/tree">Tree</a><a href="/grid">Grid</a
+><button id="sliceBtn" aria-pressed="false" title="Show only ideas said between two dates, inclusive">Time slice</button
+><button id="replay" aria-pressed="false" title="Watch the archive grow from its first day">Replay</button
+><span id="scope" hidden><b id="scopeName"></b><small id="scopeCount"></small
+><span id="hops" hidden>hops <button data-h="1">1</button><button data-h="2">2</button><button data-h="3">3</button
+><button data-h="4" aria-pressed="true">4</button></span></span
+><button id="backdrop" hidden aria-pressed="false" title="Show the rest of the sky dimmed behind this view">Backdrop</button
 ><a href="/sky" id="home" hidden>Home sky</a></nav>
 <div id="time" hidden><button id="go">Pause</button><input id="at" type="range" min="0" max="1000" value="0" aria-label="The day shown"><span id="day"></span></div>
+<div id="slice" hidden><label>From <input id="from" type="date"></label><label>to <input id="to" type="date"></label
+><div class="dual"><input id="r0" type="range" min="0" max="0" value="0" aria-label="Start date"
+><input id="r1" type="range" min="0" max="0" value="0" aria-label="End date"></div><span id="sliceCount"></span
+><button id="fitSlice" title="Frame the cards in this slice">Fit</button
+><button id="clearSlice" title="Return to all dates">All time</button></div>
 <canvas id="c"></canvas>
-<div id="bar"><b id="t"></b><small id="f"></small><a id="open">Open</a><a id="lens">Light from here</a></div>
+<div id="bar"><b id="t"></b><small id="f"></small><div class="actions"><a id="open">Open</a
+><a id="constellation">Constellation</a><a id="lens">Light from here</a><a id="crossroads">Crossroads</a></div></div>
 <script type="application/json" id="d">{data}</script>
 <script>
 "use strict";
-// The sky (decision 0005, amended): positions come from the pipeline and never move. A lens only lights.
+// The sky (decision 0005, amended): positions come from the pipeline and never move. A bounded sub-view (a picked
+// star's connection constellation, a lens, or a time slice) narrows or lights what's drawn without moving anything.
 const D = JSON.parse(document.getElementById("d").textContent);
-// /sky?lit=<ids>: those cards lit where they are, as a lens lights its results (a thread, or a cell of the grid).
-const asked = new URLSearchParams(location.search).get("lit");
-if (asked && !D.rel) D.rel = Object.fromEntries(asked.split(",").map(id => [id, 1]));
-const S = D.stars.map(([id, x, y, size, conv, age, title, facts, first]) =>
-  ({id, x, y: -y, size, conv, age, title, facts, first, rel: D.rel ? (D.rel[id] || 0) : 1}));
+const ymd = t => {
+  const d = new Date(t * 1000);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const S = D.stars.map(([id, x, y, size, conv, age, title, facts, first, times]) => {
+  const ts = times || (first != null ? [first] : []);
+  return {id, x, y: -y, size, conv, age, title, facts, first, times: ts,
+          days: [...new Set(ts.map(ymd))].sort(), rel: 1};
+});
+const byId = new Map(S.map(s => [s.id, s]));
 const RADIUS = [1.6, 2.6, 3.6, 4.8];   // observation, candidate, pinned idea, canonical idea
 const c = document.getElementById("c"), g = c.getContext("2d");
 let W = 0, H = 0, dpr = 1, cam = {x: 0, y: 0, k: 200}, selected = null, queued = false, dirty = false, last = 0;
@@ -58,8 +101,8 @@ for (const s of S) s.hue = Math.round((Math.atan2(s.y - my, s.x - mx) * 180 / Ma
 // panning slow. A sprite is one hue (in HUES steps) at one age (in AGES steps): a white-hot core, a faint halo of
 // its color, and four spikes. Sharpness is recency, so a card said lately is a point with long spikes, and an old
 // one a wider, dimmer core with none. Its opacity and size are applied when it's stamped.
-const HUES = 48, AGES = 6, SPRITE = 128, REACH = 7, sprites = new Map();   // a sprite reaches REACH radii out
-const LINK = {};   // a link's stroke style by its opacity
+const HUES = 48, AGES = 6, SPRITE = 128, REACH = 7, sprites = new Map();
+const LINK = {};
 function sprite(hue, old) {
   const h = Math.round(hue / (360 / HUES)) % HUES, o = Math.round(old * (AGES - 1)), key = h * AGES + o;
   if (!sprites.has(key)) {
@@ -91,34 +134,54 @@ function sprite(hue, old) {
   return sprites.get(key);
 }
 for (const s of S) {
-  s.old = Math.round(Math.min(s.age / 120, 1) * (AGES - 1)) / (AGES - 1);   // recency: softer, wider with age
-  s.bright = .4 + .6 * Math.min(1, Math.log2(1 + s.conv) / 3);       // recurrence: 7 conversations is full
+  s.old = Math.round(Math.min(s.age / 120, 1) * (AGES - 1)) / (AGES - 1);
+  s.bright = .4 + .6 * Math.min(1, Math.log2(1 + s.conv) / 3);
   s.img = sprite(s.hue, s.old);
-  // A sharp star twinkles, a soft one barely: each at its own pace, set by where it is, so it's the same every visit.
   const n = Math.abs(Math.sin(s.x * 12.9898 + s.y * 78.233) * 43758.5453) % 1;
   s.phase = n * 6.283; s.pace = .5 + 1.3 * ((n * 7.13) % 1); s.swing = .2 * (1 - .75 * s.old);
 }
 
-// The haze behind the stars is the stars themselves, blurred: where many cards sit close, the sky glows their color.
-// Summed once over the map's extent, in numbers so faint light doesn't band, and stretched with the camera.
+// Bounded state: `slice` bounds when an idea was said ([from, to] inclusive, hiding undated typed ideas while active);
+// `focus` bounds which stars belong (a constellation fanned out from a star, a stored lens, a lit set, or a seed's
+// relevance), and `backdrop` chooses between isolating those stars (false) and dimming the rest of the sky (true).
+const DAYS = [...new Set(S.flatMap(s => s.days))].sort();
+const DAY0 = DAYS[0] || "", DAY1 = DAYS[DAYS.length - 1] || "";
+let slice = null;   // {from: "YYYY-MM-DD" | "", to: "YYYY-MM-DD" | ""} or null
+let focus = null;   // {kind: "constellation"|"lens"|"lit"|"seed", ...} or null
+let group = null;   // Set of star indices in `focus` (intersected with `slice`), or null on the unbounded sky
+let backdrop = false;
+
+function inSlice(s) {
+  if (!slice) return true;
+  if (!s.days.length) return false;
+  const [lo, hi] = slice.from && slice.to && slice.from > slice.to ? [slice.to, slice.from] : [slice.from, slice.to];
+  return s.days.some(d => (!lo || d >= lo) && (!hi || d <= hi));
+}
+
+// The haze behind the stars is the visible stars themselves, blurred over the map's extent.
 const HAZE = 160, haze = document.createElement("canvas"), hz = {x: 0, y: 0, w: 1, h: 1};
-function mist() {
-  if (!S.length) return;
+if (S.length) {
   const xs = S.map(s => s.x), ys = S.map(s => s.y), x0 = Math.min(...xs), y0 = Math.min(...ys);
   const span = Math.max(Math.max(...xs) - x0, Math.max(...ys) - y0, .05), pad = span * .3;
   Object.assign(hz, {x: x0 - pad, y: y0 - pad, w: span + 2 * pad, h: span + 2 * pad});
+}
+function mist() {
   haze.width = haze.height = HAZE;
+  if (!S.length) return;
+  const shown = S.filter(s => inSlice(s) && (!group || backdrop || group.has(s.i)));
+  if (!shown.length) return;
   const sum = new Float32Array(HAZE * HAZE * 3), sigma = HAZE * .028, reach = Math.ceil(4.5 * sigma);
-  for (const s of S) {
+  for (const s of shown) {
     const cx = (s.x - hz.x) / hz.w * HAZE, cy = (s.y - hz.y) / hz.h * HAZE, h = s.hue / 60;
-    const rgb = [0, 4, 2].map(n => 1 - .6 * Math.max(0, Math.min(1, 2 - Math.abs((h + n) % 6 - 3))));   // a pale tint
+    const rgb = [0, 4, 2].map(n => 1 - .6 * Math.max(0, Math.min(1, 2 - Math.abs((h + n) % 6 - 3))));
+    const dim = group && !group.has(s.i) ? .2 : 1;
     for (let y = Math.max(0, Math.floor(cy - reach)); y <= Math.min(HAZE - 1, cy + reach); y++)
       for (let x = Math.max(0, Math.floor(cx - reach)); x <= Math.min(HAZE - 1, cx + reach); x++) {
-        const w = s.bright * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma * sigma)), at = (y * HAZE + x) * 3;
+        const w = s.bright * dim * Math.exp(-((x - cx) ** 2 + (y - cy) ** 2) / (2 * sigma * sigma)), at = (y * HAZE + x) * 3;
         sum[at] += w * rgb[0]; sum[at + 1] += w * rgb[1]; sum[at + 2] += w * rgb[2];
       }
   }
-  const q = haze.getContext("2d"), px = q.createImageData(HAZE, HAZE), full = 14;   // how much light is full glow
+  const q = haze.getContext("2d"), px = q.createImageData(HAZE, HAZE), full = group && !backdrop ? 5 : 14;
   for (let i = 0; i < HAZE * HAZE; i++) {
     const r = sum[3 * i], gr = sum[3 * i + 1], b = sum[3 * i + 2], top = Math.max(r, gr, b, 1e-6);
     px.data[4 * i] = 255 * r / top; px.data[4 * i + 1] = 255 * gr / top; px.data[4 * i + 2] = 255 * b / top;
@@ -126,7 +189,6 @@ function mist() {
   }
   q.putImageData(px, 0, 0);
 }
-mist();
 
 function fit(stars) {
   if (!stars.length) return;
@@ -135,33 +197,29 @@ function fit(stars) {
   cam.x = (x0 + x1) / 2; cam.y = (y0 + y1) / 2;
   cam.k = Math.min(W / Math.max(x1 - x0, .05), H / Math.max(y1 - y0, .05)) * .8;
 }
-// Where a star is on the screen: its place on the map, plus how far a pulse has knocked it for the moment.
 const sx = s => (s.x - cam.x) * cam.k + W / 2 + s.dx, sy = s => (s.y - cam.y) * cam.k + H / 2 + s.dy;
 
-// A picked star reaches what its connections lead to, HOPS hops out: `near` is each of those stars' hops from it,
-// and the connections that lead outward. A tap sends a pulse along them, one hop every HOP ms with less energy
-// each hop. It draws each link as it crosses it, and each star it strikes flares, is named if it's a neighbor,
-// and is knocked the way the pulse was going, then springs back to its place: the pipeline's positions are where
-// stars rest (decision 0005).
 const HOP = 240, HOPS = 4, still = matchMedia("(prefers-reduced-motion: reduce)");
-const NAMED = 8;   // how many of the picked star's connections are named beside it
-const REACHED = [.75, .3, .16, .08];   // a link's opacity by how many hops out it starts
-const FADE = [1, 1, .85, .65, .5], UNLIT = .45;   // a star's brightness by its hops, and beyond reach
-const KNOCK = 10, LOSS = .68, SPRING = 260, DAMP = 150;   // px at the first hop, kept per hop, ms a swing, ms to settle
+const NAMED = 8;
+const REACHED = [.75, .34, .18, .1];
+const FADE = [1, 1, .85, .65, .5], UNLIT = .45;
+const KNOCK = 10, LOSS = .68, SPRING = 260, DAMP = 150;
 let ripple = null, near = null;
-let lit = null;   // a star tapped once: ringed and named, not yet picked
-function reach(s) {
+let lit = null;
+
+// `pool` keeps a tap's pulse inside an active constellation or lens so clicking around never spills out of it.
+function reach(s, maxHops = HOPS, pool = null) {
   const depth = new Map([[s.i, 0]]), edges = [];
   let rim = [s.i], far = 0;
-  for (let d = 0; d < HOPS && rim.length; d++) {
+  for (let d = 0; d < maxHops && rim.length; d++) {
     const next = [];
     for (const i of rim) for (const j of S[i].next) {
+      if (pool && !pool.has(j) || !inSlice(S[j])) continue;
       if (!depth.has(j)) { depth.set(j, d + 1); next.push(j); }
       if (depth.get(j) === d + 1) { edges.push([i, j, d]); far = d + 1; }
     }
     rim = next;
   }
-  // The way a pulse is going when it strikes a star: the sum of the directions of the links it arrives by.
   const push = new Map();
   for (const [i, j] of edges) {
     const x = S[j].x - S[i].x, y = S[j].y - S[i].y, len = Math.hypot(x, y) || 1, v = push.get(j) || [0, 0];
@@ -171,7 +229,7 @@ function reach(s) {
   return {depth, edges, push, far};
 }
 function pluck(s) {
-  if (!still.matches) ripple = {at: performance.now(), seed: s, ends: (near.far + 1) * HOP + 4 * DAMP};
+  if (!still.matches && near) ripple = {at: performance.now(), seed: s, ends: (near.far + 1) * HOP + 4 * DAMP};
 }
 
 function draw(now) {
@@ -181,14 +239,11 @@ function draw(now) {
   const t = still.matches ? 0 : now / 1000, wave = ripple ? now - ripple.at : 0;
   if (ripple && wave > ripple.ends) ripple = null;
   g.globalCompositeOperation = "lighter";
-  g.globalAlpha = replay ? .25 : D.rel ? .4 : 1; g.imageSmoothingQuality = "high";
-  // In replay, a card is there once it has been said, and flares as it arrives.
+  g.globalAlpha = replay ? .25 : group && backdrop ? .45 : 1; g.imageSmoothingQuality = "high";
   const cut = replay ? replay.t : Infinity, fresh = (T1 - T0) / 45;
   g.drawImage(haze, (hz.x - cam.x) * cam.k + W / 2, (hz.y - cam.y) * cam.k + H / 2, hz.w * cam.k, hz.h * cam.k);
   g.globalAlpha = 1;
-  // Stars are smaller on a small screen, where the same map is packed tighter.
   const grow = Math.min(2.2, .75 + .25 * Math.sqrt(cam.k / 200)) * Math.max(.6, Math.min(1, Math.min(W, H) / 800));
-  // How far the pulse has got, in hops: past everything when there's no pulse.
   const drawn = ripple && ripple.seed === selected ? wave / HOP : 99;
   for (const s of S) s.dx = s.dy = 0;
   if (ripple && near) for (const [j, [x, y]] of near.push) {
@@ -197,23 +252,24 @@ function draw(now) {
     const far = KNOCK * LOSS ** (d - 1) * Math.exp(-since / DAMP) * Math.sin(6.283 * since / SPRING);
     S[j].dx = x * far; S[j].dy = y * far;
   }
-  // Each link stroked on its own, so where links cross they add up, as they always have. With a star picked, only
-  // the links it reaches are drawn, fainter each hop out, each growing from its nearer end as the pulse crosses
-  // it; a lens still shows what it lights.
+  // In a constellation or lens, every link inside the group stays drawn so clicking from star to star keeps the
+  // constellation's web intact, while the picked star's own reach shines brighter on top of it.
   for (const [i, j] of D.links) {
-    if (S[i].first > cut || S[j].first > cut) continue;   // a link shows once both its cards have been said
-    const a = S[i], b = S[j], da = near ? near.depth.get(i) : undefined, db = near ? near.depth.get(j) : undefined;
+    const a = S[i], b = S[j];
+    if (a.first > cut || b.first > cut || !inSlice(a) || !inSlice(b)) continue;
+    if (group && (!group.has(i) || !group.has(j))) continue;
+    const da = near ? near.depth.get(i) : undefined, db = near ? near.depth.get(j) : undefined;
     const d = da === undefined || db === undefined ? HOPS : Math.min(da, db);
-    const lit = D.rel ? Math.round(45 * Math.min(a.rel, b.rel)) / 100 : near ? 0 : .12;
+    const base = group ? Math.max(.18, Math.round(45 * Math.min(a.rel, b.rel)) / 100) : near ? 0 : .12;
     const part = d < HOPS ? Math.max(0, Math.min(drawn - d, 1)) : 0;
-    const alpha = part > 0 ? Math.max(REACHED[d], lit) : lit;
+    const alpha = part > 0 ? Math.max(REACHED[d], base) : base;
     if (alpha < .02) continue;
-    g.lineWidth = part > 0 && d === 0 ? 1.5 : 1;
+    g.lineWidth = part > 0 && d === 0 ? 1.6 : group ? 1.15 : 1;
     g.strokeStyle = LINK[alpha] || (LINK[alpha] = `rgba(${alpha > .5 ? "200, 212, 255" : "150, 165, 220"}, ${alpha})`);
-    const [from, to] = db < da ? [b, a] : [a, b], fx = sx(from), fy = sy(from), whole = part > 0 && lit < .02 ? part : 1;
+    const [from, to] = db < da ? [b, a] : [a, b], fx = sx(from), fy = sy(from), whole = part > 0 && base < .02 ? part : 1;
     g.beginPath(); g.moveTo(fx, fy); g.lineTo(fx + (sx(to) - fx) * whole, fy + (sy(to) - fy) * whole); g.stroke();
   }
-  if (ripple) {
+  if (ripple && near) {
     g.lineWidth = 1.5; g.lineCap = "round";
     for (const [i, j, d] of near.edges) {
       const u = wave / HOP - d;
@@ -230,44 +286,53 @@ function draw(now) {
     }
   }
   for (const s of S) {
+    if (s.first > cut || !inSlice(s) || group && !backdrop && !group.has(s.i)) continue;
     const x = sx(s), y = sy(s);
-    if (x < -60 || y < -60 || x > W + 60 || y > H + 60 || s.first > cut) continue;
-    // In a lens, what it reaches stands out at any recurrence, and the rest recedes to a faint backdrop.
-    let a = !D.rel ? s.bright : s.rel > 0 ? Math.max(s.bright, .7) * (.45 + .55 * s.rel) : .06 * s.bright;
-    let r = RADIUS[s.size] * grow * (D.rel && s.rel > 0 ? 1.3 : 1);
+    if (x < -60 || y < -60 || x > W + 60 || y > H + 60) continue;
+    const member = !group || group.has(s.i);
+    let a = !group ? s.bright : member ? Math.max(s.bright, .75) * (.45 + .55 * s.rel) : .06 * s.bright;
+    let r = RADIUS[s.size] * grow * (group && member ? 1.28 : 1);
     a *= 1 + s.swing * Math.sin(t * s.pace + s.phase);
-    // The picked star and what it reaches stand out, less each hop, once the pulse has got there; outside a lens,
-    // the rest dim.
     const d = near ? near.depth.get(s.i) : undefined, struck = d !== undefined && drawn >= d;
     if (ripple && struck) {
       const flare = Math.exp(-(wave - d * HOP) / 420) * LOSS ** d;
       a += flare * .9; r *= 1 + .7 * flare;
     }
     if (struck && d === 0) { a = 1; r *= 1.25; }
-    else if (struck && d === 1) { a = Math.max(a, .9); r *= 1.15; }
-    else if (near && !D.rel) a *= struck ? FADE[d] : UNLIT;
+    else if (struck && d === 1) { a = Math.max(a, .92); r *= 1.15; }
+    else if (near && !group) a *= struck ? FADE[d] : UNLIT;
+    else if (near && member) a *= struck ? 1 : .78;
     if (replay && s.first != null && cut - s.first < fresh) { const born = 1 - (cut - s.first) / fresh; a += born; r *= 1 + .8 * born; }
     if (s === lit) { a = 1; r *= 1.2; }
     g.globalAlpha = Math.min(a, 1); g.drawImage(s.img, x - r * REACH, y - r * REACH, 2 * r * REACH, 2 * r * REACH);
   }
   g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
-  const labelled = D.rel ? S.filter(s => s.rel > 0).sort((a, b) => b.rel - a.rel).slice(0, 9) : [];
-  if (selected && drawn >= 1) for (const j of selected.next.slice(0, NAMED)) if (!labelled.includes(S[j])) labelled.push(S[j]);
+  const rootStar = focus && focus.kind === "constellation" ? byId.get(focus.root) : null;
+  if (rootStar && group && group.has(rootStar.i) && rootStar !== selected) {
+    g.strokeStyle = "rgba(157, 184, 255, .55)"; g.lineWidth = 1;
+    g.beginPath(); g.arc(sx(rootStar), sy(rootStar), 9, 0, 6.283); g.stroke();
+  }
+  const labelled = group
+    ? S.filter(s => group.has(s.i) && s.first <= cut).sort((a, b) => (b === rootStar) - (a === rootStar) || b.rel - a.rel || b.next.length - a.next.length).slice(0, 14)
+    : [];
+  if (selected && drawn >= 1) for (const j of selected.next) {
+    if ((!group || group.has(j)) && inSlice(S[j]) && S[j].first <= cut && !labelled.includes(S[j]) && labelled.length < (group ? 18 : NAMED))
+      labelled.push(S[j]);
+  }
   if (selected && !labelled.includes(selected)) labelled.push(selected);
   if (lit) {
     g.strokeStyle = "rgba(255, 255, 255, .7)"; g.lineWidth = 1; g.beginPath(); g.arc(sx(lit), sy(lit), 11, 0, 6.283); g.stroke();
-    g.strokeStyle = "rgba(255, 255, 255, .16)"; g.beginPath(); g.arc(sx(lit), sy(lit), AGAIN, 0, 6.283); g.stroke();   // where a tap picks it
+    g.strokeStyle = "rgba(255, 255, 255, .16)"; g.beginPath(); g.arc(sx(lit), sy(lit), AGAIN, 0, 6.283); g.stroke();
     if (!labelled.includes(lit)) labelled.push(lit);
   }
   g.font = "12px system-ui, sans-serif"; g.textBaseline = "middle";
   for (const s of labelled) {
     const t = s.title.length > 42 ? s.title.slice(0, 40) + "…" : s.title;
-    g.fillStyle = s === selected ? "#ffffff" : "rgba(232, 234, 242, .8)";
+    g.fillStyle = s === selected ? "#ffffff" : "rgba(232, 234, 242, .82)";
     g.fillText(t, sx(s) + (s === lit ? 15 : 8), sy(s));
   }
 }
-// The sky twinkles at 30 frames a second while the page is in view, and draws every frame while a ripple runs or
-// the map is being moved. With reduced motion asked for, it draws only when something changes.
+
 function frame(now) {
   queued = false;
   if (replay && replay.playing) {
@@ -292,22 +357,49 @@ function zoom(factor, px, py) {
   cam.x = wx - (px - W / 2) / cam.k; cam.y = wy - (py - H / 2) / cam.k; redraw();
 }
 
-function select(s, tapped) {
-  selected = s; near = s ? reach(s) : null;
-  if (s && tapped) pluck(s);
-  const bar = document.getElementById("bar");
-  bar.style.display = s ? "block" : "none";
-  if (s) {
-    document.getElementById("t").textContent = s.title;
-    document.getElementById("f").textContent = s.facts;
-    document.getElementById("open").href = "/idea/" + s.id;
-    document.getElementById("lens").href = "/sky?seed=" + s.id;
+function urlFor() {
+  const p = new URLSearchParams();
+  if (focus) {
+    if (focus.kind === "constellation") {
+      p.set("constellation", focus.root);
+      if (focus.hops !== HOPS) p.set("hops", String(focus.hops));
+    } else if (focus.kind === "seed") p.set("seed", focus.id);
+    else if (focus.kind === "lens") p.set("lens", focus.id);
+    else if (focus.kind === "lit") p.set("lit", focus.ids);
+    const defaultBackdrop = focus.kind === "seed";
+    if (backdrop !== defaultBackdrop) p.set("backdrop", backdrop ? "1" : "0");
   }
+  if (slice) {
+    if (slice.from) p.set("from", slice.from);
+    if (slice.to) p.set("to", slice.to);
+  }
+  const q = p.toString();
+  return q ? "/sky?" + q : "/sky";
+}
+
+function updateBar() {
+  const bar = document.getElementById("bar");
+  bar.style.display = selected ? "block" : "none";
+  if (!selected) return;
+  document.getElementById("t").textContent = selected.title;
+  document.getElementById("f").textContent = selected.facts;
+  document.getElementById("open").href = "/idea/" + selected.id;
+  document.getElementById("crossroads").href = "/crossroads/" + selected.id;
+  document.getElementById("lens").href = "/sky?seed=" + selected.id;
+  const con = document.getElementById("constellation");
+  con.href = "/sky?constellation=" + selected.id;
+  con.textContent = focus && (focus.kind !== "constellation" || focus.root !== selected.id)
+    ? "Constellation from here" : "Constellation";
+}
+
+function select(s, tapped) {
+  selected = s && inSlice(s) && (!group || group.has(s.i)) ? s : null;
+  near = selected ? reach(selected, HOPS, group) : null;
+  if (selected && tapped) pluck(selected);
+  updateBar();
   redraw();
 }
 
-// The first tap on a star lights it, and keeps what's picked; a tap on the lit star picks it. A tap on nothing puts
-// the lit star out, and another clears what's picked. So a stray tap while panning never changes the selection.
 function tap(s) {
   if (s && s !== lit) { lit = s; redraw(); }
   else if (s) { lit = null; select(s, true); }
@@ -315,27 +407,68 @@ function tap(s) {
   else select(null);
 }
 
-// A lit star is a bigger target than an unlit one: a tap within AGAIN px of it is a tap on it, whatever else is
-// nearer, so a finger can pick it among its neighbors.
 const AGAIN = 36;
 const again = (px, py) => lit && Math.hypot(sx(lit) - px, sy(lit) - py) <= AGAIN ? lit : null;
 
 function hit(px, py) {
   let best = null, bestD = Infinity;
   for (const s of S) {
-    if (D.rel && s.rel === 0 || replay && s.first > replay.t) continue;
+    if (!inSlice(s) || group && !group.has(s.i) || replay && s.first > replay.t) continue;
     const d = Math.hypot(sx(s) - px, sy(s) - py);
     if (d < bestD) { best = s; bestD = d; }
   }
   return bestD <= 18 ? best : null;
 }
 
-// Replay: the archive as it grew. The time runs from the first card said to the last; a card is on the sky once
-// it has been said, and a link once both its cards have. It replays when things were said, on today's map: where a
-// card sits, and which cards are connected, are as they are now. A card with no time said (typed) is always there.
+// Recompute which stars belong to the active constellation/lens and time slice, update the nav controls, and redraw
+// the haze. When `reframe` is true, fit the camera to the bounded stars.
+function syncView(reframe) {
+  for (const s of S) s.rel = 1;
+  if (!focus) {
+    group = null;
+  } else if (focus.kind === "constellation") {
+    const root = byId.get(focus.root);
+    group = root && inSlice(root) ? new Set(reach(root, focus.hops, null).depth.keys()) : new Set();
+  } else {
+    for (const s of S) s.rel = focus.rel[s.id] || 0;
+    group = new Set(S.filter(s => s.rel > 0 && inSlice(s)).map(s => s.i));
+  }
+  if (lit && (!inSlice(lit) || group && !group.has(lit.i))) lit = null;
+  if (selected && (!inSlice(selected) || group && !group.has(selected.i))) selected = null;
+  near = selected ? reach(selected, HOPS, group) : null;
+
+  const scope = document.getElementById("scope"), backBtn = document.getElementById("backdrop");
+  scope.hidden = !focus; backBtn.hidden = !focus;
+  document.getElementById("home").hidden = !focus;
+  backBtn.setAttribute("aria-pressed", backdrop);
+  if (focus) {
+    const label = focus.kind === "constellation" ? (byId.get(focus.root)?.title || "Constellation")
+      : focus.kind === "lens" ? focus.name
+      : focus.kind === "seed" ? (byId.get(focus.id)?.title || "Seed") : "Lit cards";
+    document.getElementById("scopeName").textContent = label;
+    document.getElementById("scopeCount").textContent = `${group.size} card${group.size === 1 ? "" : "s"}`;
+    const hops = document.getElementById("hops");
+    hops.hidden = focus.kind !== "constellation";
+    for (const b of hops.querySelectorAll("button")) b.setAttribute("aria-pressed", Number(b.dataset.h) === focus.hops);
+  }
+  if (slice) {
+    const n = S.filter(s => inSlice(s) && (!group || group.has(s.i))).length;
+    document.getElementById("sliceCount").textContent = `${n} card${n === 1 ? "" : "s"}`;
+  }
+  mist();
+  if (reframe) {
+    const pool = group ? S.filter(s => group.has(s.i) && (focus.kind !== "seed" || s.rel >= .25))
+      : S.filter(inSlice);
+    fit(pool.length >= 2 ? pool : group && group.size === 1 ? S.filter(s => group.has(s.i)) : S);
+  }
+  updateBar();
+  redraw();
+}
+
+// Replay: the archive as it grew.
 const said = S.map(s => s.first).filter(t => t != null).sort((a, b) => a - b);
-const T0 = said.length ? said[0] : 0, T1 = said.length ? said[said.length - 1] : 1, SWEEP = 45000;   // ms, end to end
-let replay = null;   // {t: the time shown, playing, last: the frame it last moved on}
+const T0 = said.length ? said[0] : 0, T1 = said.length ? said[said.length - 1] : 1, SWEEP = 45000;
+let replay = null;
 const fmtDay = new Intl.DateTimeFormat(undefined, {day: "numeric", month: "short", year: "numeric"});
 function told() {
   let n = 0; while (n < said.length && said[n] <= replay.t) n++;
@@ -347,16 +480,133 @@ function playing(on) {
   replay.playing = on; replay.last = performance.now(); document.getElementById("go").textContent = on ? "Pause" : "Play";
   redraw();
 }
-document.getElementById("replay").addEventListener("click", e => {
-  replay = replay ? null : {t: T0, playing: false, last: 0};
-  e.currentTarget.setAttribute("aria-pressed", !!replay); document.getElementById("time").hidden = !replay;
-  document.body.classList.toggle("replaying", !!replay);
-  if (replay) { lit = null; select(null); playing(true); told(); } else redraw();
+function stopReplay() {
+  if (!replay) return;
+  replay = null;
+  document.getElementById("replay").setAttribute("aria-pressed", "false");
+  document.getElementById("time").hidden = true;
+  document.body.classList.remove("replaying");
+}
+document.getElementById("replay").addEventListener("click", () => {
+  if (replay) { stopReplay(); redraw(); return; }
+  if (slice) setSlice(null);
+  replay = {t: T0, playing: false, last: 0};
+  document.getElementById("replay").setAttribute("aria-pressed", "true");
+  document.getElementById("time").hidden = false;
+  document.body.classList.add("replaying");
+  lit = null; select(null); playing(true); told();
 });
 document.getElementById("go").addEventListener("click", () => playing(!replay.playing));
 document.getElementById("at").addEventListener("input", e => {
   replay.t = T0 + (T1 - T0) * e.target.value / 1000; replay.playing = false;
   document.getElementById("go").textContent = "Play"; told(); redraw();
+});
+
+// Time slice: inclusive [from, to] dates, with date inputs and a dual-handle range slider over DAYS.
+const fromEl = document.getElementById("from"), toEl = document.getElementById("to");
+const r0 = document.getElementById("r0"), r1 = document.getElementById("r1");
+r0.max = r1.max = String(Math.max(DAYS.length - 1, 0));
+fromEl.min = toEl.min = DAY0; fromEl.max = toEl.max = DAY1;
+
+function dayIndex(d, end) {
+  if (!DAYS.length || !d) return end ? Math.max(DAYS.length - 1, 0) : 0;
+  if (end) {
+    let i = DAYS.length - 1; while (i > 0 && DAYS[i] > d) i--;
+    return i;
+  }
+  let i = 0; while (i + 1 < DAYS.length && DAYS[i] < d) i++;
+  return i;
+}
+function syncSliceControls() {
+  const on = !!slice;
+  document.getElementById("sliceBtn").setAttribute("aria-pressed", on);
+  document.getElementById("slice").hidden = !on;
+  document.body.classList.toggle("slicing", on);
+  if (!on) return;
+  fromEl.value = slice.from; toEl.value = slice.to;
+  r0.value = String(dayIndex(slice.from, false));
+  r1.value = String(dayIndex(slice.to, true));
+}
+function setSlice(next, reframe = false, replace = true) {
+  if (next) stopReplay();
+  slice = next;
+  syncSliceControls();
+  syncView(reframe);
+  if (replace) history.replaceState(history.state, "", urlFor());
+}
+document.getElementById("sliceBtn").addEventListener("click", () => {
+  setSlice(slice ? null : {from: DAY0, to: DAY1});
+});
+document.getElementById("clearSlice").addEventListener("click", () => setSlice(null));
+document.getElementById("fitSlice").addEventListener("click", () => syncView(true));
+for (const el of [fromEl, toEl]) el.addEventListener("input", () => {
+  if (!slice) return;
+  slice = {from: fromEl.value, to: toEl.value};
+  r0.value = String(dayIndex(slice.from, false));
+  r1.value = String(dayIndex(slice.to, true));
+  syncView(false);
+  history.replaceState(history.state, "", urlFor());
+});
+for (const [el, which] of [[r0, 0], [r1, 1]]) el.addEventListener("input", () => {
+  if (!slice || !DAYS.length) return;
+  let a = Number(r0.value), b = Number(r1.value);
+  if (which === 0 && a > b) { b = a; r1.value = String(b); }
+  if (which === 1 && b < a) { a = b; r0.value = String(a); }
+  slice = {from: DAYS[a], to: DAYS[b]};
+  fromEl.value = slice.from; toEl.value = slice.to;
+  syncView(false);
+  history.replaceState(history.state, "", urlFor());
+});
+
+// Constellation, lens and seed navigation.
+function openConstellation(starId, hops = HOPS, push = true) {
+  if (!byId.has(starId)) return;
+  focus = {kind: "constellation", root: starId, hops};
+  backdrop = false;
+  document.title = byId.get(starId).title || "Sky";
+  syncView(true);
+  select(byId.get(starId), false);
+  if (push) history.pushState({focus, backdrop, slice}, "", urlFor());
+}
+async function light(seed, push) {
+  if (seed) {
+    const r = await fetch("/sky/lens?seed=" + encodeURIComponent(seed), {credentials: "same-origin"});
+    if (!r.ok) { location.href = "/sky?seed=" + encodeURIComponent(seed); return; }
+    const got = await r.json();
+    focus = {kind: "seed", id: seed, rel: got.rel};
+    backdrop = true;
+    document.title = got.title;
+  } else {
+    focus = null; backdrop = false; document.title = "Sky";
+  }
+  syncView(true);
+  select(seed ? byId.get(seed) || null : null, false);
+  if (push) history.pushState({focus, backdrop, slice}, "", urlFor());
+}
+
+document.getElementById("constellation").addEventListener("click", e => {
+  if (!selected || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  e.preventDefault(); openConstellation(selected.id, HOPS, true);
+});
+document.getElementById("lens").addEventListener("click", e => {
+  if (!selected || e.metaKey || e.ctrlKey || e.shiftKey) return;
+  e.preventDefault(); light(selected.id, true);
+});
+document.getElementById("home").addEventListener("click", e => {
+  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
+  e.preventDefault(); light(null, true);
+});
+document.getElementById("backdrop").addEventListener("click", () => {
+  backdrop = !backdrop;
+  syncView(false);
+  history.replaceState({focus, backdrop, slice}, "", urlFor());
+});
+document.getElementById("hops").addEventListener("click", e => {
+  const b = e.target.closest("button[data-h]");
+  if (!b || !focus || focus.kind !== "constellation") return;
+  focus = {...focus, hops: Number(b.dataset.h)};
+  syncView(true);
+  history.replaceState({focus, backdrop, slice}, "", urlFor());
 });
 
 const pointers = new Map();
@@ -397,42 +647,50 @@ c.addEventListener("wheel", e => { e.preventDefault(); zoom(Math.exp(-e.deltaY /
                    {passive: false});
 addEventListener("resize", resize);
 
-// A lens lights the map in place: the page fetches only its relevance (/sky/lens), and the address and history
-// follow, so back returns to the sky as it was. If the fetch fails, the link loads the page as before.
-function show() {
-  lit = null;
-  for (const s of S) s.rel = D.rel ? (D.rel[s.id] || 0) : 1;
-  document.getElementById("home").hidden = !D.rel;
-  const lighted = D.rel ? S.filter(s => s.rel >= .25) : S;
-  fit(lighted.length >= 2 ? lighted : S);
-  select(D.seed ? S.find(s => s.id === D.seed) || null : null);
-}
-async function light(seed, push) {
-  if (seed) {
-    const r = await fetch("/sky/lens?seed=" + encodeURIComponent(seed), {credentials: "same-origin"});
-    if (!r.ok) { location.href = "/sky?seed=" + encodeURIComponent(seed); return; }
-    const got = await r.json();
-    D.rel = got.rel; D.seed = seed; document.title = got.title;
+function bootFromUrl() {
+  const qs = new URLSearchParams(location.search);
+  const validDate = d => d && /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : "";
+  const f = validDate(qs.get("from")), u = validDate(qs.get("to"));
+  slice = f || u ? {from: f, to: u} : null;
+  syncSliceControls();
+
+  const askedLit = qs.get("lit"), con = qs.get("constellation") || D.constellation;
+  const hops = Math.max(1, Math.min(HOPS, Number(qs.get("hops")) || HOPS));
+  if (con && byId.has(con)) {
+    focus = {kind: "constellation", root: con, hops};
+    backdrop = qs.get("backdrop") === "1";
+  } else if (D.lens && D.rel) {
+    focus = {kind: "lens", id: D.lens.id, name: D.lens.name, rel: D.rel};
+    backdrop = qs.get("backdrop") === "1";
+  } else if (D.seed && D.rel) {
+    focus = {kind: "seed", id: D.seed, rel: D.rel};
+    backdrop = qs.get("backdrop") !== "0";
+  } else if (askedLit) {
+    const rel = Object.fromEntries(askedLit.split(",").filter(Boolean).map(id => [id, 1]));
+    focus = {kind: "lit", ids: askedLit, rel};
+    backdrop = qs.get("backdrop") === "1";
   } else {
-    D.rel = null; D.seed = null; document.title = "Sky";
+    focus = null; backdrop = false;
   }
-  if (push) history.pushState({seed}, "", seed ? "/sky?seed=" + encodeURIComponent(seed) : "/sky");
-  show();
+  syncView(true);
+  const pickId = focus?.kind === "constellation" ? focus.root : focus?.kind === "seed" ? focus.id : null;
+  select(pickId ? byId.get(pickId) || null : null, false);
 }
-document.getElementById("lens").addEventListener("click", e => {
-  if (!selected || e.metaKey || e.ctrlKey || e.shiftKey) return;   // a new tab loads the page as usual
-  e.preventDefault(); light(selected.id, true);
+
+addEventListener("popstate", e => {
+  if (e.state && "focus" in e.state) {
+    focus = e.state.focus; backdrop = e.state.backdrop; slice = e.state.slice;
+    syncSliceControls(); syncView(true);
+    const pickId = focus?.kind === "constellation" ? focus.root : focus?.kind === "seed" ? focus.id : null;
+    select(pickId ? byId.get(pickId) || null : null, false);
+  } else {
+    bootFromUrl();
+  }
 });
-document.getElementById("home").addEventListener("click", e => {
-  if (e.metaKey || e.ctrlKey || e.shiftKey) return;
-  e.preventDefault(); light(null, true);
-});
-addEventListener("popstate", e => light(e.state ? e.state.seed : new URLSearchParams(location.search).get("seed"),
-                                        false));
 
 resize();
-history.replaceState({seed: D.seed}, "");
-show();
+bootFromUrl();
+history.replaceState({focus, backdrop, slice}, "", urlFor());
 redraw();
 </script>
 </html>

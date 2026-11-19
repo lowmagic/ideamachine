@@ -1,6 +1,6 @@
 # M5: the MCP server here, and lenses
 
-_2026-11-14. Status: plan, my answers of 2026-11-14 in; slice 1 built (migration 068, `im.mcp`). The design
+_2026-11-14. Status: done 2026-11-19 (slices 1–6). The design
 ROADMAP-v2's M5 row asks for. It settles how [decision 0005](../decisions/0005-presentation-inside-idea-machine.md)'s
 MCP server moves in under [SPEC §2](../SPEC.md#2-contracts)'s contract, and the storage
 [decision 0013](../decisions/0013-lenses-and-boards.md) leaves to M5._
@@ -245,6 +245,10 @@ One PR each, in order:
    - **A pin's last anchor** is the cluster's own id (`idea:<id>`), for a cluster with no speech, nothing typed and
      no archive capture: one inserted by hand, as the test fixtures' are. A merge follows it; a rebuild doesn't.
 6. The canonical lenses, judged under bars registered in im-evals first.
+   **Passed (2026-11-19):** four passed both held-half bars on the second sheet (2026-11-18), and the replacement
+   fifth topic lens passed both on its held-half sheet (15/15 marked members in, 1 `?`, precision 1.000, Wilson 95%
+   0.796–1.000, against the weighted embedding baseline's 0.875; lens-only 4/4, baseline-only 2/4, near misses 1/9
+   with 1 `?`; im-evals `reports/2026-11-19-lens-bars-3-result.md`). All five canonical lenses pass.
 
 ## The canonical lenses
 
@@ -256,7 +260,9 @@ private, and reach `im` as data (`im lens import FILE`, 0013); nothing in this r
 **Five, after the second sheet** (decided 2026-11-18, im-evals' round 2 result): four passed both bars. I dropped one
 question, unmarked, as a filter I wouldn't use. One topic failed both bars, and a new topic takes its place, one I
 have a lot of content about, reworked on the dev half like the others and judged on a sheet of its own. M5 is done
-when all five pass. The four that passed stand: the new sheet judges only the new lens.
+when all five pass. The four that passed stand: the new sheet judges only the new lens. **Passed 2026-11-19**
+(im-evals' round 3 result): 15/15 marked members in (1 `?`), precision 1.000 against the baseline's 0.875, so all
+five canonical lenses pass.
 
 **Tried first,** before the sheets: a pilot (`im audit-lens`, with its own pre-registration) has Jev answer every
 lens's wordings about every card, from a `lenses.json` kept in saved/, and reports what each lens lets in and the
@@ -293,6 +299,8 @@ The bars:
 - **Used.** Whether I open each lens again over the next two weeks, recorded as an observation beside the bars,
   unblinded, never mixed into them.
 
-## Still open
+## Settled in the pre-registrations
 
-- The bars' numbers, in their pre-registration (a starting point: precision ≥ 0.8, and above the baseline's).
+- **The bars' numbers** (im-evals `reports/2026-11-18-lens-bars-2-preregistration.md`,
+  `2026-11-18-lens-bars-3-preregistration.md`): precision among marked members ≥ 0.8, and strictly above the
+  embedding baseline's weighted precision. All five canonical lenses met both.

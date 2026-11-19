@@ -56,9 +56,10 @@ DATABASE_ENV = "IM_WEB_DATABASE_URL"
 TOKEN_ENV = "IM_WEB_TOKEN"
 COOKIE = "emanation_session"
 PAGE = 50
-SHOW = {  # which maturities the feed shows, and the tab's name
+SHOW = {  # which maturities the feed shows, and the button's name
     "candidates": (("candidate", "idea"), "candidates and ideas"),
     "ideas": (("idea",), "ideas"),
+    "observations": (("observation",), "observations"),
     "all": (("observation", "candidate", "idea"), "everything"),
 }
 ACTIONS = {"canonical": ("idea_keep", '{"as": "canonical"}'), "pinned": ("idea_keep", '{"as": "pinned"}'),
@@ -127,19 +128,31 @@ def _rows(conn, sql: str, args=()) -> list[dict]:
     return [dict(zip(names, row)) for row in cur.fetchall()]
 
 
+EMANATION_VIEWS = (("/sky", "Sky"), ("/trails", "Trails"), ("/echoes", "Echoes"), ("/threads", "Threads"),
+                   ("/apart", "Apart"), ("/crossroads", "Crossroads"))
+TRELLIS_VIEWS = (("/lenses", "Lenses"), ("/tree", "Tree"), ("/grid", "Grid"))
+
+
 def feed(conn, show: str = "candidates", page: int = 0, demo: bool = False) -> str:
-    maturities = SHOW.get(show, SHOW["candidates"])[0]
+    show = show if show in SHOW else "candidates"
+    maturities = SHOW[show][0]
     rows = _rows(conn, f"""SELECT * FROM {_views(demo)}cards WHERE maturity = ANY(%s) {"AND NOT redacted" if demo else ""}
                            ORDER BY last_seen DESC, idea_id LIMIT %s OFFSET %s""",
                  (list(maturities), PAGE + 1, page * PAGE))
-    tabs = " ".join(f'<a href="/?show={k}"{" aria-current=page" if k == show else ""}>{name}</a>'
-                    for k, (_, name) in SHOW.items()) + ' <a href="/sky">sky</a> <a href="/trails">trails</a>' \
-        + ' <a href="/echoes">echoes</a> <a href="/threads">threads</a> <a href="/apart">apart</a> <a href="/crossroads">crossroads</a> <a href="/tree">tree</a> <a href="/grid">grid</a> <a href="/lenses">lenses</a>' \
-        + f' <a href="/demo">{"leave demo mode" if demo else "demo mode"}</a>'
+    views = ("".join(f'<a class="btn view" href="{href}">{name}</a>' for href, name in EMANATION_VIEWS)
+             + '<span class="sep" aria-hidden="true"></span>'
+             + "".join(f'<a class="btn trellis" href="{href}">{name}</a>' for href, name in TRELLIS_VIEWS)
+             + f'<a class="btn mode{" on" if demo else ""}" href="/demo">'
+             + f'{"leave demo mode" if demo else "demo mode"}</a>')
+    filters = "".join(f'<a class="pill" href="/?show={k}"{" aria-current=page" if k == show else ""}>{name}</a>'
+                      for k, (_, name) in SHOW.items())
     cards = "".join(f'<li><a href="/idea/{r["idea_id"]}">{_e(r["title"])}</a><p>{_e(r["statement"])}</p>'
                     f'<small>{_e(_facts(r))}</small></li>' for r in rows[:PAGE])
-    more = f'<a href="/?show={_e(show)}&page={page + 1}">older</a>' if len(rows) > PAGE else ""
-    return _page("Idea Machine", f"<nav>{tabs}</nav><ol>{cards or '<li>Nothing here.</li>'}</ol>{more}")
+    more = f'<a class="btn trellis" href="/?show={_e(show)}&page={page + 1}">older</a>' if len(rows) > PAGE else ""
+    return _page("Idea Machine",
+                 f'<nav class="views" aria-label="Views">{views}</nav>'
+                 f'<nav class="filters" aria-label="Show">{filters}</nav>'
+                 f"<ol>{cards or '<li>Nothing here.</li>'}</ol>{more}")
 
 
 def card(conn, idea_id: str, demo: bool = False) -> str | None:
@@ -168,9 +181,11 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
     buttons = "".join(f'<button name="action" value="{a}">{a}</button>' for a in ACTIONS)
     body = [f"<h1>{_e(r['title'])}</h1><p>{_e(r['statement'])}</p><small>{_e(_facts(r))}</small>",
             "" if demo else f'<form method="post" action="/idea/{idea_id}">{buttons}</form>{_why(idea_id, near)}',
-            f'<p><a href="/sky?seed={idea_id}">Light the sky from here</a> · '
-            f'<a href="/trails?at={idea_id}">Its trail</a> · <a href="/crossroads/{idea_id}">Its crossroads</a>'
-            + ("" if demo else f' · <a href="/idea/{idea_id}/edit">Edit</a>') + "</p>"]
+            f'<p><a class="btn view" href="/sky?constellation={idea_id}">Its constellation</a> '
+            f'<a class="btn view" href="/sky?seed={idea_id}">Light the sky from here</a> '
+            f'<a class="btn view" href="/trails?at={idea_id}">Its trail</a> '
+            f'<a class="btn view" href="/crossroads/{idea_id}">Its crossroads</a>'
+            + ("" if demo else f' <a class="btn trellis" href="/idea/{idea_id}/edit">Edit</a>') + "</p>"]
     if r["my_note"]:
         body.append(f"<h2>My note</h2><p>{_e(r['my_note'])}</p>")
     body.append("<h2>Said</h2><ol>" + "".join(
@@ -307,30 +322,45 @@ def _why(idea_id: str, near: list) -> str:
 SIZES = {"observation": 0, "candidate": 1, "idea": 2}   # a canonical idea is one bigger than a pinned one
 
 
-def sky(conn, seed: str | None = None, demo: bool = False, lens_id: str | None = None) -> str | None:
+def sky(conn, seed: str | None = None, demo: bool = False, lens_id: str | None = None,
+        constellation: str | None = None) -> str | None:
     """Every card at its place on the one map (decision 0005, amended). With a seed, the view from it lights what's
-    relevant to it; with a lens, the lens lights its cards; with neither, the encodings light everything. None if the
-    seed isn't on the map, or there's no such lens. In demo mode a sensitive card keeps its star, blank. The page
-    loads the map once: lighting it from another card fetches only that view's relevance (sky_lens)."""
+    relevant to it; with a constellation, only that card's connection fan-out is drawn (with a toggle for the dimmed
+    backdrop); with a lens, the lens draws its cards the same way; with none, the encodings light everything. None if
+    the seed or constellation isn't on the map, or there's no such lens. Each star carries its moment timestamps so
+    the page can bound the sky to an inclusive date slice without hiding a recurring card said inside it. In demo mode
+    a sensitive card keeps its star, blank."""
     from im import lens
 
     v = _views(demo)
     rows = _rows(conn, f"""SELECT c.*, p.x, p.y FROM {v}cards c JOIN pub.card_positions p USING (idea_id)
                            ORDER BY c.idea_id""")
     index = {str(r["idea_id"]): n for n, r in enumerate(rows)}
-    if seed is not None and seed not in index:
+    if (seed is not None and seed not in index) or (constellation is not None and constellation not in index):
         return None
     shown = None
     if lens_id is not None:
         shown = _rows(conn, "SELECT lens_id, name FROM pub.lenses WHERE lens_id = %s", (lens_id,))
         if not shown:
             return None
+    moments: dict[str, list[int]] = defaultdict(list)
+    for i, t in conn.execute(f"""SELECT idea_id::text, said_at FROM {v}card_moments
+                                 WHERE said_at IS NOT NULL ORDER BY said_at"""):
+        if i in index:
+            ts = int(t.timestamp())
+            if not moments[i] or moments[i][-1] != ts:
+                moments[i].append(ts)
     now = datetime.now(timezone.utc)
-    stars = [[str(r["idea_id"]), round(float(r["x"]), 4), round(float(r["y"]), 4),
-              SIZES[r["maturity"]] + (r["kept_as"] == "canonical"), r["conversations"],
-              max((now - r["last_seen"]).days, 0) if r["last_seen"] else 365, r["title"] or "", _facts(r),
-              int(r["first_said"].timestamp()) if r["first_said"] else None]   # when first said, for replay
-             for r in rows]
+    stars = []
+    for r in rows:
+        sid = str(r["idea_id"])
+        first = int(r["first_said"].timestamp()) if r["first_said"] else None
+        times = ([] if first is None else
+                 moments.get(sid) or sorted({int(t.timestamp()) for t in (r["first_said"], r["last_seen"]) if t}))
+        stars.append([sid, round(float(r["x"]), 4), round(float(r["y"]), 4),
+                      SIZES[r["maturity"]] + (r["kept_as"] == "canonical"), r["conversations"],
+                      max((now - r["last_seen"]).days, 0) if r["last_seen"] else 365, r["title"] or "", _facts(r),
+                      first, times])
     links = sorted({tuple(sorted((index[a], index[b]))) for a, b in conn.execute(
         """SELECT a::text, b::text FROM pub.card_links UNION ALL SELECT from_id::text, to_id::text FROM pub.card_lineage""")
         if a in index and b in index and a != b})
@@ -340,8 +370,11 @@ def sky(conn, seed: str | None = None, demo: bool = False, lens_id: str | None =
         rel = {str(m["idea_id"]): 1 for m in lens.members(conn, lens_id, demo) if str(m["idea_id"]) in index}
     else:
         rel = None
-    data = json.dumps({"stars": stars, "links": links, "rel": rel, "seed": seed}, separators=(",", ":"))
-    title = (rows[index[seed]]["title"] or "Sky") if seed else shown[0]["name"] if shown else "Sky"
+    data = json.dumps({"stars": stars, "links": links, "rel": rel, "seed": seed, "constellation": constellation,
+                       "lens": {"id": lens_id, "name": shown[0]["name"]} if shown else None}, separators=(",", ":"))
+    title = ((rows[index[seed]]["title"] or "Sky") if seed
+             else (rows[index[constellation]]["title"] or "Sky") if constellation
+             else shown[0]["name"] if shown else "Sky")
     return _SKY.replace("{title}", _e(title)).replace("{data}", data.replace("</", "<\\/"))
 
 
@@ -1126,13 +1159,35 @@ def _page(title: str, body: str) -> str:
 <link rel="apple-touch-icon" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-title" content="Idea Machine">
 <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#161618" media="(prefers-color-scheme: dark)"><style>
-:root {{ --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --accent: #0a58ca; }}
+:root {{ --bg: #fff; --fg: #1d1d1f; --muted: #6e6e73; --line: #e5e5ea; --surface: #f5f5f7; --accent: #0a58ca;
+  --view-bg: #eef4ff; --view-line: #c9dcff; --warn-bg: #fff4e5; --warn-fg: #8a4b00; --warn-line: #f5c98b; }}
 @media (prefers-color-scheme: dark) {{ :root {{ --bg: #161618; --fg: #ececf0; --muted: #9a9aa2; --line: #2c2c30;
-  --accent: #7aa7ff; }} }}
+  --surface: #202024; --accent: #7aa7ff; --view-bg: #172033; --view-line: #283b63; --warn-bg: #33240f;
+  --warn-fg: #ffd28a; --warn-line: #66481d; }} }}
 body {{ background: var(--bg); color: var(--fg); font: 16px/1.5 system-ui, sans-serif; max-width: 46rem;
   margin: 0 auto; padding: 1rem; }}
-a {{ color: var(--accent); }} small {{ color: var(--muted); }} nav a {{ margin-right: 1rem; }}
+a {{ color: var(--accent); }} small {{ color: var(--muted); }}
+nav {{ display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-bottom: .65rem; }}
+nav > a:not(.btn):not(.pill) {{ display: inline-block; padding: .22rem .65rem; border-radius: 6px;
+  background: var(--surface); border: 1px solid var(--line); color: var(--fg); text-decoration: none; font-size: .9rem; }}
+nav > a:not(.btn):not(.pill):hover {{ border-color: var(--accent); color: var(--accent); }}
 nav a[aria-current] {{ font-weight: 600; text-decoration: none; color: var(--fg); }}
+.btn {{ display: inline-block; padding: .24rem .68rem; border-radius: 6px; text-decoration: none; font-size: .88rem;
+  line-height: 1.35; border: 1px solid transparent; }}
+.btn.view {{ background: var(--view-bg); border-color: var(--view-line); color: var(--accent); font-weight: 500; }}
+.btn.view:hover {{ border-color: var(--accent); }}
+.btn.trellis {{ background: var(--surface); border-color: var(--line); color: var(--fg); }}
+.btn.trellis:hover {{ border-color: var(--accent); color: var(--accent); }}
+.btn.mode {{ margin-left: auto; border: 1px dashed var(--line); color: var(--muted); font-size: .84rem; }}
+.btn.mode:hover {{ border-color: var(--fg); color: var(--fg); }}
+.btn.mode.on {{ border-style: solid; background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-fg);
+  font-weight: 600; }}
+.views .sep {{ width: 1px; height: 1.1rem; background: var(--line); margin: 0 .15rem; }}
+.filters {{ padding-top: .2rem; padding-bottom: .35rem; border-bottom: 1px solid var(--line); margin-bottom: 1rem; }}
+.pill {{ display: inline-block; padding: .2rem .75rem; border-radius: 999px; border: 1px solid var(--line);
+  color: var(--fg); text-decoration: none; font-size: .88rem; }}
+.pill:hover {{ border-color: var(--fg); }}
+nav a.pill[aria-current] {{ background: var(--fg); color: var(--bg); border-color: var(--fg); font-weight: 600; }}
 ol, ul {{ padding-left: 1.2rem; }} li {{ margin: 0 0 1rem; }} li p {{ margin: .2rem 0; }}
 blockquote {{ margin: 0; padding-left: .8rem; border-left: 3px solid var(--line); }}
 button {{ margin: 0 .4rem .4rem 0; font: inherit; padding: .3rem .8rem; }} select {{ font: inherit; }}
@@ -1244,9 +1299,9 @@ class Handler(BaseHTTPRequestHandler):
                 page = int(q["page"]) if q.get("page", "").isdigit() else 0
                 return self._send(200, feed(conn, q.get("show", "candidates"), page, demo))
             if url.path == "/sky":
-                seed, by = q.get("seed"), q.get("lens")
-                ok = (seed is None or _UUID.match(seed)) and (by is None or _UUID.match(by))
-                body = sky(conn, seed, demo, by) if ok else None
+                seed, by, con = q.get("seed"), q.get("lens"), q.get("constellation")
+                ok = all(x is None or _UUID.match(x) for x in (seed, by, con))
+                body = sky(conn, seed, demo, by, con) if ok else None
                 return self._send(200, body) if body else self._send(404, _page("Not found", "Not found."))
             if url.path == "/sky/lens":   # the page lighting itself from another card, without reloading the map
                 seed = q.get("seed", "")

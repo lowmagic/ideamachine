@@ -317,6 +317,69 @@ def test_a_seed_nothing_is_like_lights_only_itself():
     assert lens.relevance(Nearby([("b", "c", 1.0)], [("b", 0.0)]), "a") == {"a": 1.0}   # linked, but not to the seed
 
 
+def test_feed_buttons_and_sky_constellation_and_moments_without_db():
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    t0 = datetime(2026, 6, 1, 12, tzinfo=timezone.utc)
+    t1 = datetime(2026, 7, 10, 15, tzinfo=timezone.utc)
+    cards = [
+        {"idea_id": "a", "title": "Recurring point", "statement": "Said twice.", "origin": "captured",
+         "maturity": "candidate", "kept_as": None, "my_note": None, "observations": 2, "by_me": 2, "by_me_diar": 0,
+         "by_others": 0, "conversations": 2, "first_said": t0, "last_seen": t1, "links": 1, "proposed": False,
+         "redacted": False, "x": 0.2, "y": -0.3},
+        {"idea_id": "b", "title": "Overheard remark", "statement": "Not mine.", "origin": "captured",
+         "maturity": "observation", "kept_as": None, "my_note": None, "observations": 1, "by_me": 0, "by_me_diar": 0,
+         "by_others": 1, "conversations": 1, "first_said": t0, "last_seen": t0, "links": 1, "proposed": False,
+         "redacted": False, "x": -0.4, "y": 0.1},
+        {"idea_id": "c", "title": "Undated note", "statement": "Typed.", "origin": "mine",
+         "maturity": "idea", "kept_as": "canonical", "my_note": None, "observations": 0, "by_me": 0, "by_me_diar": 0,
+         "by_others": 0, "conversations": 0, "first_said": None, "last_seen": t1, "links": 0, "proposed": False,
+         "redacted": False, "x": 0.0, "y": 0.0},
+    ]
+
+    class Cursor:
+        def __init__(self, rows, cols=()):
+            self._rows = rows
+            self.description = [SimpleNamespace(name=n) for n in cols]
+
+        def fetchall(self):
+            return self._rows
+
+        def __iter__(self):
+            return iter(self._rows)
+
+    class Conn:
+        def execute(self, sql, args=()):
+            if "WHERE maturity = ANY" in sql:
+                mats = set(args[0])
+                picked = [r for r in cards if r["maturity"] in mats]
+                cols = list(cards[0].keys())
+                return Cursor([tuple(r[k] for k in cols) for r in picked], cols)
+            if "JOIN pub.card_positions" in sql:
+                cols = list(cards[0].keys())
+                return Cursor([tuple(r[k] for k in cols) for r in cards], cols)
+            if "card_moments" in sql:
+                return Cursor([("a", t0), ("a", t0), ("a", t1), ("b", t0)])
+            return Cursor([("a", "b")])
+
+    obs_feed = web.feed(Conn(), "observations")
+    assert "Overheard remark" in obs_feed and "Recurring point" not in obs_feed and "Undated note" not in obs_feed
+    assert '<a class="pill" href="/?show=observations" aria-current=page>observations</a>' in obs_feed
+    assert '<a class="btn view" href="/sky">Sky</a>' in obs_feed
+    assert '<a class="btn trellis" href="/lenses">Lenses</a>' in obs_feed
+    assert '<a class="btn mode" href="/demo">demo mode</a>' in obs_feed
+    assert '<a class="btn mode on" href="/demo">leave demo mode</a>' in web.feed(Conn(), "bogus", 0, True)
+
+    home = sky_data(web.sky(Conn()))
+    by_id = {s[0]: s for s in home["stars"]}
+    assert by_id["a"][9] == [int(t0.timestamp()), int(t1.timestamp())]
+    assert by_id["c"][8] is None and by_id["c"][9] == []
+    con_page = web.sky(Conn(), constellation="a")
+    assert "<title>Recurring point</title>" in con_page and sky_data(con_page)["constellation"] == "a"
+    assert web.sky(Conn(), constellation="missing") is None
+
+
 def test_a_trail_is_a_conversations_moments_in_the_order_said(matched, admin):  # noqa: F811
     from im import lattice
     from helpers import HashEmbedder
@@ -667,3 +730,63 @@ def test_an_echo_arc_is_drawn_in_its_turn(matched, admin):  # noqa: F811
     judged(matched, build, new, "related")
     page = as_app(admin, web.echoes)
     assert page.count("<path pathLength") == page.count('<li id="e') >= 1 and 'style="--d: 0"' in page
+
+
+def test_the_feed_filters_observations_alone_and_groups_header_buttons(matched, admin):  # noqa: F811
+    coffee = str(idea(matched, "The coffee order is the real meeting."))
+    assert "Nothing here." in as_app(admin, web.feed, "observations")
+    as_app(admin, web.act, coffee, "unkeep")   # its only capture is not_me, so unkeeping makes it an observation
+    obs = as_app(admin, web.feed, "observations")
+    assert "The coffee order is the real meeting." in obs
+    assert "Something new" not in obs and "Signal may not be true" not in obs
+    assert 'href="/?show=observations" aria-current=page>observations</a>' in obs
+    # Header buttons distinguish Emanation views, Trellis/lenses, mode, and feed maturity pills.
+    assert '<a class="btn view" href="/sky">Sky</a>' in obs
+    assert '<a class="btn trellis" href="/lenses">Lenses</a>' in obs
+    assert '<a class="btn mode" href="/demo">demo mode</a>' in obs
+    demo = as_app(admin, web.feed, "bogus", 0, True)
+    assert 'href="/?show=candidates" aria-current=page>' in demo
+    assert '<a class="btn mode on" href="/demo">leave demo mode</a>' in demo
+
+
+def test_the_sky_carries_moments_for_time_slicing_and_opens_constellations(served, matched, admin):  # noqa: F811
+    from im import lattice
+    from helpers import HashEmbedder
+
+    build = str(idea(matched, "Broken builds as signal"))
+    typed = uuid.uuid4()
+    as_app(admin, lambda c: c.execute(
+        "INSERT INTO pub.feedback_events (kind, idea_id, payload) VALUES ('idea_add', %s, %s)",
+        (typed, json.dumps({"title": "Undated note", "statement": "Typed before the run."}))))
+    # A second occurrence of Broken builds on a later day: star[9] carries both timestamps so slicing to the later day
+    # still finds it, while the undated typed card carries [] so a date slice hides it.
+    later = "2026-10-15T12:00:00Z"
+    obs_id = uuid.uuid4()
+    matched.execute("""INSERT INTO im.observations (observation_id, segment_ids, first_seen, source, idea_id, quote,
+                                                    said_at, said_by, conversation, source_ref)
+                       VALUES (%s, '{}', %s, 'typed', %s, 'Broken builds again.', %s, 'me', 'c-later',
+                               'idea_add:999')""",
+                    (obs_id, later, build, later))
+    lattice.match_stage(matched, None, HashEmbedder())
+    data = sky_data(as_app(admin, web.sky))
+    stars = {s[0]: s for s in data["stars"]}
+    assert len(stars[build][9]) == 2 and stars[build][9][0] < stars[build][9][1]
+    assert stars[str(typed)][8] is None and stars[str(typed)][9] == []
+
+    # Demo mode keeps a sensitive card's blank star slicable by date without exposing words.
+    as_app(admin, lambda c: c.execute("""INSERT INTO pub.feedback_events (kind, idea_id, payload)
+                                         VALUES ('idea_sensitive', %s, '{"sensitive": true}')""", (build,)))
+    demo_stars = {s[0]: s for s in sky_data(as_app(admin, web.sky, None, True))["stars"]}
+    assert demo_stars[build][6] == "" and len(demo_stars[build][9]) >= 1
+
+    # Card links to its constellation, and /sky?constellation=<id> validates and frames that root.
+    as_app(admin, lambda c: c.execute("""INSERT INTO pub.feedback_events (kind, idea_id, payload)
+                                         VALUES ('idea_sensitive', %s, '{"sensitive": false}')""", (build,)))
+    assert f'href="/sky?constellation={build}"' in as_app(admin, web.card, build)
+    _, headers, _ = request(served, "POST", "/login", f"token={TOKEN}")
+    cookie = headers["Set-Cookie"].split(";")[0]
+    status, _, body = request(served, "GET", f"/sky?constellation={build}", cookie=cookie)
+    assert status == 200 and "<title>Broken builds as signal</title>" in body
+    assert sky_data(body)["constellation"] == build
+    assert request(served, "GET", "/sky?constellation=nope", cookie=cookie)[0] == 404
+    assert request(served, "GET", f"/sky?constellation={uuid.uuid4()}", cookie=cookie)[0] == 404
