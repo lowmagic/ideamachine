@@ -165,13 +165,13 @@ def _idea_matrix(conn, embedder) -> tuple[list, np.ndarray]:
 
 def _pending_items(conn) -> list[tuple]:
     """Items on current episodes, and archive items, not matched yet, oldest first by when they were said, with my
-    latest verdict, and their reading and attribution (v5; NULL before)."""
+    latest verdict, and their reading (mine if I corrected it, im.item_reading) and attribution (v5; NULL before)."""
     return conn.execute(
         """SELECT i.item_id, i.episode_id, i.kind, w.said_by, i.quote, i.gist, i.source_segment_ids,
                   (SELECT v.verdict FROM im.item_verdicts v WHERE v.item_id = i.item_id
                    ORDER BY v.decided_at DESC LIMIT 1),
-                  i.reading, coalesce(i.attributed_to, '')
-           FROM im.items i JOIN im.item_said_by w USING (item_id)
+                  r.reading, coalesce(i.attributed_to, '')
+           FROM im.items i JOIN im.item_said_by w USING (item_id) JOIN im.item_reading r USING (item_id)
            LEFT JOIN im.episodes e USING (episode_id)
            LEFT JOIN im.observations o ON o.observation_id = i.observation_id AND i.episode_id IS NULL
            WHERE (e.current OR i.episode_id IS NULL)

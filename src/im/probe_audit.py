@@ -431,7 +431,7 @@ def _state(conn, question: str, p: dict, quotes_only: bool) -> dict:
     sides = {}
     for name, idea in zip("ab", p["sides"]):
         side = connect.side_data(conn, idea)
-        sides[name] = {k: v for k, v in side.items() if not (quotes_only and k == "summary")}
+        sides[name] = {k: v for k, v in side.items() if not (quotes_only and k in ("summary", "my_summary"))}
     return sides
 
 

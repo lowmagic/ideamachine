@@ -53,6 +53,13 @@ def test_jev_tags_once_and_again_when_the_text_changes(seeded_lattice, admin):
     stats = sensitivity.tag_stage(pipe, client)   # the changed idea alone, asked again
     assert (stats["pending"], stats["tagged"]) == (1, 1) and "The tea order" in json.dumps(sent[-1]["state"])
 
+    item = table(pipe, "SELECT item_id FROM pub.card_evidence WHERE idea_id = %s AND item_id IS NOT NULL", coffee)[0][0]
+    as_web_role(admin, "INSERT INTO pub.feedback_events (kind, item_id, payload) VALUES ('item_reading', %s, %s)",
+                item, json.dumps({"reading": "Who's got the tea order?", "meaning_changed": True}))
+    stats = sensitivity.tag_stage(pipe, client)   # my reading of its quote: that card alone, with my reading
+    assert (stats["pending"], stats["tagged"]) == (1, 1)
+    assert sent[-1]["state"]["item"]["my_readings"] == ["Who's got the tea order?"]
+
 
 def test_my_marks_win_at_once_either_way(seeded_lattice, admin):
     pipe = seeded_lattice

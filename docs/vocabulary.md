@@ -290,24 +290,37 @@ What Hearsay heard, as Idea Machine reads it. Hearsay's
   and reading say (`im.ideas.statement`). It's written once, by the matcher, falling back to the gist when it reads as
   said (`lattice.match_stage`), and it's kept as `claude_statement`; it changes only when I correct it, so it's a
   stable anchor for retrieval. My latest correction overrides it.
-- **My note.** My latest `idea_note` on a cluster (`my_note`, 011:23-24), written by `im idea edit --note`.
+- **My note.** My latest `idea_note` on a cluster (`my_note`, 011:23-24), written by `im idea edit --note` or a
+  card's edit page.
 - **Archive elaboration.** What the ChatGPT archive developed around one of its seeded ideas, in the archived
   database (`im.ideas.notes`, 008:12). In the live database `notes` holds only the note I typed adding an idea (023).
 - **Correction.** An `idea_correct` event that replaces a cluster's title or statement (011), or reverts one with an
-  empty value. `im idea edit` writes it (`im.idea`, source `cli`); Lattice did until 2026-11-11.
+  empty value. `im idea edit` writes it (`im.idea`, source `cli`), and so does a card's edit page
+  (`/idea/<id>/edit`, source `emanation`); Lattice did until 2026-11-11.
+- **My reading.** An `item_reading` event that replaces a capture's reading, or reverts it with an empty value,
+  written from a card's edit page (072). My latest on any capture of an occurrence counts for every capture of it
+  (`im.item_reading`), so a re-read keeps it. The card shows it folded under the quote. The judges see it as mine:
+  "My reading" for the connection judge, `my_readings` for the lens questions and the sensitivity tagger. The
+  matcher reads it too.
+- **My summary.** A card's title and statement as the connection judge sees them once I've corrected them, or typed
+  the idea, in place of "Claude's summary" (`connect.side_data`).
+- **Meaning changed.** My mark on a correction (`idea_correct`, `item_reading`; payload `meaning_changed`) that it
+  fixed what the card or quote means (a mishearing, a meaning turned around), not only its wording. It decides
+  nothing, since every correction is judged again; `im corrections` (the error log) sorts by it.
 - **Feedback event.** A recorded action or judgment of mine (`pub.feedback_events`, 008:88-98). `source` says where I
   made it: `cli`, `emanation` or `mcp` (the MCP server, `im.mcp`, since M5; Lattice's until 2026-11-11), `merge` for
   what a merge carried to the cluster kept (`merge.MERGED`), and `lattice` for Lattice's app. Where events disagree,
   my latest is the one with the highest `event_id`; `at` bounds time windows and orders nothing (SPEC.md:95-97, 043).
-  The feedback event kinds, from the CHECK at 031:7-11, 061:5-9, 068 and 069:
+  The feedback event kinds, from the CHECK at 031:7-11, 061:5-9, 068, 069 and 072:
   - on clusters: `idea_keep` (payload `as`: `canonical` or `pinned`), `idea_unkeep`, `idea_dismiss` (payload
     `reason`, optional: see Dismissal reason), `idea_add`, `star`, `unstar`, `link`, `unlink`, `idea_note`,
     `idea_correct`, `idea_sensitive`, `idea_distinct`;
-  - on themes: `pin_theme`, `unpin_theme`, `rename_theme`, `reject_theme`, `merge_theme`, `split_theme`,
-    `file_idea`, `unfile_idea`, `theme_sensitive`;
+  - on themes, which are lenses since 071: `pin_theme`, `unpin_theme`, `rename_theme`, `reject_theme`, `merge_theme`,
+    `split_theme`, `file_idea`, `unfile_idea`, `theme_sensitive`;
   - on the app: `demo_on`, `demo_off` (demo mode, the one setting; they name nothing, 068);
   - on lenses and boards: `lens_add`, `lens_edit`, `lens_state`, `lens_pin` (payload `pin`: `in` or `out`, on a
     cluster), `lens_unpin`, `board_place`, `board_remove` (each names its lens or board in its payload, 069);
+  - on captures: `item_reading` (payload `reading`, 072);
   - legacy, still in the ledger but read by nothing that orders or gates ([0007]): `keep` and `discard` (nothing
     writes these), `item_keep`, `item_discard`, `item_star`, `idea_compare`, `digest_star`, `digest_dismiss`, and `vocab_add`, `vocab_remove`
     (vocabulary suggestions, retired by [0012]).

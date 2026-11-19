@@ -570,6 +570,54 @@ def test_a_lens_is_made_and_shaped_from_its_pages(served, matched):  # noqa: F81
     assert request(served, "GET", f"/lens/{uuid.uuid4()}", cookie=cookie)[0] == 404
 
 
+def test_a_card_and_its_readings_are_corrected_from_its_edit_page(served, matched):  # noqa: F811
+    from urllib.parse import urlencode
+
+    from im import extract
+
+    build = str(idea(matched, "Broken builds as signal"))
+    (item, observation), *_ = table(matched, """SELECT item_id, observation_id FROM pub.card_evidence
+                                                WHERE idea_id = %s AND item_id IS NOT NULL""", build)
+    undecided = len(extract.review_items(matched))
+    cookie = request(served, "POST", "/login", f"token={TOKEN}")[1]["Set-Cookie"].split(";")[0]
+    page = request(served, "GET", f"/idea/{build}/edit", cookie=cookie)[2]
+    assert f'name="reading:{item}"' in page and 'name="statement"' in page
+
+    title = table(matched, "SELECT title FROM pub.cards WHERE idea_id = %s", build)[0][0]
+    form = {"title": title, "statement": "Builds break on Fridays.", "note": "",
+            f"reading:{item}": "Builds keep\r\nbreaking. ", "meaning_changed": "yes"}
+    for _ in range(2):   # the second adds nothing: nothing changed
+        status, headers, _ = request(served, "POST", f"/idea/{build}/edit", urlencode(form), cookie)
+        assert (status, headers["Location"]) == (303, f"/idea/{build}")
+    assert table(matched, """SELECT kind, payload FROM pub.feedback_events
+                             WHERE kind IN ('idea_correct', 'idea_note', 'item_reading') ORDER BY event_id""") == [
+        ("idea_correct", {"statement": "Builds break on Fridays.", "meaning_changed": True}),
+        ("item_reading", {"reading": "Builds keep\nbreaking.", "meaning_changed": True})]
+    card = request(served, "GET", f"/idea/{build}", cookie=cookie)[2]
+    assert "Builds break on Fridays." in card
+    assert "<summary>reading (mine)</summary><p>Builds keep\nbreaking.</p>" in card
+    assert len(extract.review_items(matched)) == undecided   # a reading isn't a verdict
+
+    # Another capture of the same moment, as a re-read makes, takes my reading.
+    again = matched.execute("""INSERT INTO im.items SELECT (jsonb_populate_record(i, jsonb_build_object(
+                                 'item_id', gen_random_uuid()))).* FROM im.items i WHERE item_id = %s
+                               RETURNING item_id""", (item,)).fetchone()[0]
+    assert table(matched, """SELECT r.reading, r.corrected, i.observation_id FROM im.item_reading r
+                             JOIN im.items i USING (item_id) WHERE item_id = %s""", again) == \
+        [("Builds keep\nbreaking.", True, observation)]
+
+    form[f"reading:{item}"] = ""   # back to Claude's
+    request(served, "POST", f"/idea/{build}/edit", urlencode(form), cookie)
+    assert table(matched, "SELECT reading = claude_reading FROM pub.card_evidence WHERE item_id = %s", item) == \
+        [(True,)]
+    other = table(matched, """SELECT item_id FROM pub.card_evidence WHERE idea_id <> %s AND item_id IS NOT NULL
+                              LIMIT 1""", build)[0][0]
+    for bad in ({f"reading:{other}": "not this card's"}, {f"reading:{item}": "x" * 2001}, {"title": "x" * 121}):
+        assert request(served, "POST", f"/idea/{build}/edit", urlencode(bad), cookie)[0] == 400
+    assert request(served, "GET", f"/idea/{uuid.uuid4()}/edit", cookie=cookie)[0] == 404
+
+
+
 def test_the_sky_says_when_each_card_was_first_said_for_replay(matched, admin):  # noqa: F811
     from im import lattice
     from helpers import HashEmbedder

@@ -134,7 +134,8 @@ def carry_verdicts(conn) -> dict:
         descendants + """
            SELECT DISTINCT d.n, i.item_id, i.quote,
                   EXISTS (SELECT 1 FROM im.item_verdicts v WHERE v.item_id = i.item_id)
-                    OR EXISTS (SELECT 1 FROM pub.feedback_events f WHERE f.item_id = i.item_id)
+                    OR EXISTS (SELECT 1 FROM pub.feedback_events f
+                               WHERE f.item_id = i.item_id AND f.kind IN ('item_keep', 'item_discard', 'item_star'))
            FROM d JOIN im.items i ON i.source_segment_ids @> ARRAY[d.seg]
            JOIN im.episodes e ON e.episode_id = i.episode_id AND e.current""",
         ([n for n, _ in pairs], [s for _, s in pairs])).fetchall()

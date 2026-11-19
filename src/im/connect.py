@@ -84,27 +84,40 @@ def method(chat: ModelConfig = Config.connect) -> str:
 # --- A pair as shown -------------------------------------------------------------------------------------------------
 
 def side_data(conn, idea_id) -> dict:
-    """A cluster as shown: up to two things said, mine first, with who and when; Claude's summary; my note."""
-    title, statement, note = conn.execute(
-        "SELECT title, statement, my_note FROM im.idea_text WHERE idea_id = %s", (idea_id,)).fetchone()
+    """A cluster as shown: up to two things said, mine first, with who and when, and my reading of each I corrected;
+    Claude's summary, or mine when I typed the idea or corrected its title or statement (`my_summary`: shown as mine,
+    not as Claude's); my note. What I haven't corrected shows as it always has."""
+    title, statement, note, claude_title, claude_statement, origin = conn.execute(
+        """SELECT x.title, x.statement, x.my_note, x.claude_title, x.claude_statement, d.origin
+           FROM im.idea_text x JOIN im.ideas d USING (idea_id) WHERE x.idea_id = %s""", (idea_id,)).fetchone()
     quotes = conn.execute(
-        """SELECT quote, said_on, me FROM (
-             SELECT DISTINCT ON (i.observation_id) i.quote, e.started_at::date AS said_on, s.speaker = 'me' AS me
+        """SELECT quote, said_on, me, mine FROM (
+             SELECT DISTINCT ON (i.observation_id) i.quote, e.started_at::date AS said_on, s.speaker = 'me' AS me,
+                    CASE WHEN r.corrected THEN r.reading END AS mine
              FROM im.idea_evidence ev JOIN im.items i USING (item_id)
              JOIN im.episodes e ON e.episode_id = i.episode_id AND e.current
              JOIN im.observation_speaker s USING (observation_id)
+             JOIN im.item_reading r USING (item_id)
              WHERE ev.idea_id = %(id)s ORDER BY i.observation_id, i.created_at) o
            UNION ALL
-           SELECT quote, said_at::date, said_by = 'me' FROM im.observations WHERE idea_id = %(id)s
+           SELECT quote, said_at::date, said_by = 'me', NULL FROM im.observations WHERE idea_id = %(id)s
            ORDER BY me DESC, said_on, quote LIMIT 2""", {"id": idea_id}).fetchall()
-    return {"said": [{"by": "me" if me else "someone", "on": str(on), "words": q} for q, on, me in quotes],
-            "summary": f"{title}. {statement}", **({"my_note": note} if note else {})}
+    claudes = origin != "mine" and (title, statement) == (claude_title, claude_statement)
+    summary = "summary" if claudes else "my_summary"
+    return {"said": [{"by": "me" if me else "someone", "on": str(on), "words": q} | ({"my_reading": r} if r else {})
+                     for q, on, me, r in quotes],
+            summary: f"{title}. {statement}", **({"my_note": note} if note else {})}
 
 
 def side(d: dict) -> list[str]:
-    """A cluster on a sheet: up to two things said, mine first, with when; then Claude's summary, and my note."""
-    lines = [f"> \"{q['words']}\" ({q['by']}, {q['on']})" for q in d["said"]]
-    lines += [f"   Claude's summary: {d['summary']}"] + ([f"   My note: {d['my_note']}"] if "my_note" in d else [])
+    """A cluster on a sheet: up to two things said, mine first, with when, each with my reading if I corrected it;
+    then Claude's summary or mine, and my note."""
+    lines = []
+    for q in d["said"]:
+        lines.append(f"> \"{q['words']}\" ({q['by']}, {q['on']})")
+        lines += [f"   My reading: {q['my_reading']}"] if "my_reading" in q else []
+    lines += [f"   Claude's summary: {d['summary']}" if "summary" in d else f"   My summary: {d['my_summary']}"]
+    lines += [f"   My note: {d['my_note']}"] if "my_note" in d else []
     return lines
 
 
@@ -148,14 +161,19 @@ def nominate(conn) -> dict[tuple, float]:
 
 
 def _due(conn, nominated: dict, m: str, sides) -> tuple[list[tuple], list[tuple], dict]:
-    """The nominated pairs to ask, as (a, b, text, its hash): never asked first, then those whose text changed, each
-    the most similar first. The pairs the re-read gate holds, judged by another method with the same text, as (a, b,
-    text, its hash, that method, its egress id), the most similar first. And the counts of those not asked."""
+    """The pairs to ask, as (a, b, text, its hash): never asked first, then those whose text changed, each the most
+    similar first. A pair is nominated, or one the judge connected while both are still cards, nominated or not: when
+    either's text changes (my correction), its connection is asked about again rather than left standing on the old
+    text. The pairs the re-read gate holds, judged by another method with the same text, as (a, b, text, its hash,
+    that method, its egress id), the most similar first. And the counts of those not asked."""
     mine = set(conn.execute("SELECT a, b FROM im.my_link_events").fetchall())
     kept = {(a, b): rest for a, b, *rest in conn.execute(
-        "SELECT a, b, input_hash, method, egress_id FROM im.connection_verdicts")}
+        "SELECT a, b, input_hash, method, egress_id, verdict FROM im.connection_verdicts")}
+    cards = {i for (i,) in conn.execute("SELECT idea_id FROM pub.cards")}
+    pairs = nominated | {p: 0.0 for p, old in kept.items()
+                         if old[3] in CONNECTED and p not in nominated and p[0] in cards and p[1] in cards}
     due, held, counts = [], [], {"skipped": 0, "already_judged": 0}
-    for (a, b), similarity in nominated.items():
+    for (a, b), similarity in pairs.items():
         if (a, b) in mine:
             counts["skipped"] += 1
             continue
@@ -165,7 +183,7 @@ def _due(conn, nominated: dict, m: str, sides) -> tuple[list[tuple], list[tuple]
         if old and old[:2] == [h, m]:
             counts["already_judged"] += 1
         elif old and old[0] == h:
-            held.append(((-similarity, str(a), str(b)), (a, b, text, h, *old[1:])))
+            held.append(((-similarity, str(a), str(b)), (a, b, text, h, *old[1:3])))
         else:
             due.append(((old is not None, -similarity, str(a), str(b)), (a, b, text, h)))
     return [pair for _, pair in sorted(due)], [pair for _, pair in sorted(held)], counts
@@ -191,9 +209,14 @@ def held_report(conn, held: list[tuple], screen: jev.Jev | None, chat: ModelConf
 
 
 def _record(conn, a, b, m: str, v: dict, h: str, segment_ids, egress_id) -> None:
-    """Keep a verdict, and make the pair's connection, kinds and merge review say what it says."""
+    """Keep a verdict, the one it replaces in im.connection_verdicts_replaced, and make the pair's connection, kinds
+    and merge review say what it says."""
     label = v["verdict"]
     with conn.transaction():
+        conn.execute("""INSERT INTO im.connection_verdicts_replaced (a, b, verdict, direction, why, method, input_hash,
+                                                                     segment_ids, judged_at)
+                        SELECT a, b, verdict, direction, why, method, input_hash, segment_ids, judged_at
+                        FROM im.connection_verdicts WHERE a = %s AND b = %s""", (a, b))
         conn.execute(
             """INSERT INTO im.connection_verdicts (a, b, verdict, direction, analogy, why, belongs, method, input_hash,
                                                    segment_ids, egress_id)

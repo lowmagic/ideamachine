@@ -56,7 +56,8 @@ uv run im merges --top 50        # Jev asks same_v2 about every pair not answere
 uv run im merge KEEP OTHER        # merge cluster OTHER into KEEP (full ids): its captures, observations and connections move; KEEP's title and statement stay
 uv run im merge --distinct A B    # mark two clusters as distinct points: im merges stops listing them
 uv run im idea show ID           # a card (full id or unique prefix): its text, whether I corrected it, its quotes, and the text of the clusters merged into it
-uv run im idea edit ID --statement "..."   # correct a card's --title, --statement or --note; '' reverts to Claude's
+uv run im idea edit ID --statement "..."   # correct a card's --title, --statement or --note; '' reverts to Claude's; --meaning-changed marks a mishearing or a meaning turned around
+uv run im corrections             # the error log: every correction, Claude's beside mine, by my mark of whether the meaning changed, and what judging the card again changed
 uv run im lens                    # the lenses (M5), which are the themes too: each with its size, query, filters and state; im lens show <name> lists its cards and why each is in (with Jev's score). They're made, edited and pinned from the web view (/lenses, a lens's page, a card's page), by the theme tools over MCP, or by feedback events
 uv run im lens import saved/lens-final/lenses.json --state pinned   # make or update lenses from a lenses.json (lens_audit's shape) as `jev` lenses, by name; sends nothing
 uv run im lens run <name>         # Jev answers a jev lens's questions about the cards it hasn't answered, the 300 nearest its description (--all: every card it admits; --limit N); `im run` goes on through the rest
@@ -139,6 +140,25 @@ reverts to Claude's original (no note, for the note). A title takes at most 120 
 part of now), and an edit with no field. Every stage that reads the card's text sees the change as changed input on
 the next run, not a version change, so the re-read gate doesn't hold it. After a merge, `im idea show KEEP` prints
 the title and statement each merged cluster had, to fold its detail into KEEP's with `im idea edit`.
+
+A card's edit page in the web view (`/idea/<id>/edit`, linked from the card) corrects the same title, statement and
+note, with the same limits, source `emanation`, writing only what changed. It also corrects each capture's reading
+(at most 2000 characters, an empty one reverting to Claude's) as an `item_reading` event. My reading counts for every
+capture of that occurrence, so a re-read keeps it. The card shows it folded under the quote. Correcting a reading is
+not a verdict, so the capture stays in `im ideas --review`.
+
+Every correction is taken as right, and counts at once. The judges see it as mine, while what I haven't corrected
+shows as before, so nothing else is asked again. The connection judge sees "My summary" and, under a quote, "My
+reading". The lens questions and the sensitivity tagger get `my_readings` beside the quotes. The matcher reads my
+reading for captures it hasn't matched yet. The card's text changed, so its connections, lens answers and tags go
+back in their stages' queues as changed input, not held by the re-read gate. That includes connections the judge
+made that aren't among the card's nearest neighbours any more. A verdict asked again is kept in
+`im.connection_verdicts_replaced`.
+
+Each correction carries my mark of whether it changed the meaning (a mishearing, a meaning turned around) or only
+the wording: the checkbox on the edit page, `--meaning-changed` on `im idea edit`. The mark decides nothing. It's
+what `im corrections` sorts by: every card and reading I corrected, Claude's beside mine, the counts by mark, and the
+connections asked again since, with each verdict before and after.
 
 `im merges` is the merge screen (B9m). Its pairs are the open `merge_review` rows (`duplicate`, `judged_same`) and
 the pairs the connection judge nominates (one definition of near), both still cards, leaving out pairs I unlinked

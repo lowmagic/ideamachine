@@ -55,9 +55,10 @@ def _purge_tombstoned(conn) -> set[str]:
     conn.execute("""DELETE FROM im.observations o WHERE EXISTS (
                       SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(o.segment_ids))""")
     # A connection verdict's case (`why`, `analogy`) may paraphrase forgotten speech: it goes, and the pair is asked
-    # again. The connection it wrote stays until then.
-    conn.execute("""DELETE FROM im.connection_verdicts v WHERE EXISTS (
-                      SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(v.segment_ids))""")
+    # again. The connection it wrote stays until then. So do the verdicts it replaced (migration 072).
+    for table in ("connection_verdicts", "connection_verdicts_replaced"):
+        conn.execute(f"""DELETE FROM im.{table} v WHERE EXISTS (
+                           SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(v.segment_ids))""")
     # A lens pin is my input, anchored to the speech it pins: forgetting that speech forgets the pin (migration 069).
     conn.execute("""DELETE FROM im.lens_pins p WHERE EXISTS (
                       SELECT 1 FROM im.source_tombstones t WHERE t.segment_id = ANY(p.segment_ids))""")

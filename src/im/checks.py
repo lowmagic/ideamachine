@@ -35,6 +35,9 @@ UNION ALL
 SELECT v.a, t.segment_id
 FROM im.connection_verdicts v JOIN im.source_tombstones t ON t.segment_id = ANY(v.segment_ids)
 UNION ALL
+SELECT v.a, t.segment_id
+FROM im.connection_verdicts_replaced v JOIN im.source_tombstones t ON t.segment_id = ANY(v.segment_ids)
+UNION ALL
 SELECT p.lens_id, t.segment_id
 FROM im.lens_pins p JOIN im.source_tombstones t ON t.segment_id = ANY(p.segment_ids)
 """
