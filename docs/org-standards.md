@@ -1,4 +1,4 @@
-<!-- lowmagic/.github code-standards/README.md at 8401afa7edb4cc2232fdd0972fe079123e6c5002. Change it there, then run make sync-standards. -->
+<!-- lowmagic/.github code-standards/README.md at cca8c65ba8c04cfe250b83b91ba69947f014e082. Change it there, then run make sync-standards. -->
 # Standards
 
 Each principle from [PRINCIPLES.md](https://github.com/lowmagic/.github/blob/main/PRINCIPLES.md) turned into rules you can check in review, arranged by where a reviewer looks. When they pull against each other, pick what works and is easiest to undo.
@@ -13,25 +13,11 @@ Each repo keeps this file unchanged as `docs/org-standards.md`. It lists the top
 
 ## Versions and pins
 
-- A deployment pins what it runs to a commit or an image digest. A tag can move, so it can name a pin but isn't one.
-- Everything else a build or deployment pulls in is pinned as below. Where a topic file says more, it applies too.
-
-  | What | Pinned to |
-  | --- | --- |
-  | Libraries | Lower bounds in the manifest, exact versions in the committed lockfile |
-  | Container images | A digest where a deployment runs it. [containers.md](https://github.com/lowmagic/.github/blob/main/code-standards/containers.md) covers tags in compose files |
-  | OS packages | The distribution release, named by an image's tag or a VM's cloud image. Packages within it, tools included, aren't pinned, and a host a deployment manages installs security updates automatically |
-  | Tools and Ansible collections | An exact version or a commit |
-  | Other downloads | A version or revision, plus a checksum when the source isn't signed |
-  | GitHub Actions | A major tag for `actions/*`. Any other action is pinned to a full commit SHA, with a comment naming its version |
-  | These standards | `main`, so a repo's checks fail when the standards move on |
-
-- A tool run through a launcher, such as `uvx --from shellcheck-py==0.11.0.1 shellcheck`, is pinned by its own exact version. The launcher isn't pinned for it, so a repo that isn't Python doesn't take on a Python toolchain pin just to run its tools.
-- A release is an annotated `vX.Y.Z` tag on main. A tag in any other form isn't a release.
-- Versions follow semver over the interface the repo's architecture names: a published schema or views, an API, or output another program reads. A breaking change to it bumps the major version. Another scheme needs an ADR.
-- A repo makes its first release with the first breaking change to an interface that something outside the repo uses. Until then, its manifest's version is `0.0.0`.
-- From then on, the release commit sets the manifest's version, and CI fails a `vX.Y.Z` tag that doesn't match it. Nothing else writes the version by hand: a lockfile records it, and code that reports it reads it from the package's metadata.
-- A versioned data format or policy, such as a migration or a prompt policy, carries its own integer version, separate from releases.
+- A deployment pins what it runs to a commit or an image digest. A tag can move, so it isn't a pin.
+- Libraries have lower bounds in the manifest and exact versions in the committed lockfile.
+- Tools, Ansible collections, and other downloads are pinned to an exact version or commit, with a checksum when the source isn't signed. [containers.md](https://github.com/lowmagic/.github/blob/main/code-standards/containers.md) covers image tags in compose files.
+- GitHub Actions use a major tag for `actions/*`. Any other action is pinned to a full commit SHA, with a comment naming its version.
+- A release is an annotated `vX.Y.Z` tag on main, and the release commit sets the manifest's version to match. Versions follow semver over the interface the repo's architecture names: a published schema or views, an API, or output another program reads. Another scheme needs an ADR.
 
 ## Structure
 
@@ -102,9 +88,9 @@ Few, focused tests of consequential behavior, at boundaries that stay put.
 - The README says what the project is and how to run it, in that order.
 - `AGENTS.md` at the root tells an agent what to read before changing the repo (PRINCIPLES.md, the copies of these standards, `docs/standards.md`) and to run `make check` before committing.
 - Docs describe the behavior a user can observe (a default, a state name, an env var), so a reader never has to open the code to learn what the project does. They don't carry a second copy of the logic.
-- `docs/SPEC.md` says what the product is meant to do. It opens with the problem: who has it, and what goes wrong for them today. Its requirements follow, grouped under a heading per area, each a bullet that opens with an ID and a name, such as `**QUERY-3: Series listing.**` An ID names one requirement for good: it isn't renumbered or reused. What the spec assumes without having checked goes under Unknowns, and what isn't decided yet under Open questions. [examples/SPEC.md](https://github.com/lowmagic/.github/blob/main/code-standards/examples/SPEC.md) shows the shape.
-- `docs/ROADMAP.md` says the order it gets built in: numbered slices, each usable on its own. A slice opens with `Status:`, `planned` or `done`, and the change that makes its done-when pass sets it to `done`, so the next slice is the first one planned. Then it says what a user would notice, `Delivers:` lists the requirement IDs it delivers instead of restating them, and `Done when:` says what someone can demonstrate. A done slice stays where it is. The roadmap has no dates, checkboxes, or progress table; git says when. [examples/ROADMAP.md](https://github.com/lowmagic/.github/blob/main/code-standards/examples/ROADMAP.md) shows the shape.
-- A deferred requirement stays in the spec and gets a later slice in the roadmap, not a stub in code. When the roadmap changes, check the spec's IDs against its `Delivers:` lines: a requirement no slice delivers is one the roadmap defers on purpose.
+- `docs/SPEC.md` says what the product is meant to do. It opens with the problem: who has it, and what goes wrong for them today. Then the requirements, each with a short ID, such as `QUERY-3`, that the roadmap cites. What isn't checked or decided yet goes under Unknowns and Open questions. [examples/SPEC.md](https://github.com/lowmagic/.github/blob/main/code-standards/examples/SPEC.md) shows the shape.
+- `docs/ROADMAP.md` says the order it gets built in: numbered slices, each usable on its own. Each says what a user would notice, which requirement IDs it delivers, and how someone can demonstrate it's done, and is marked done once it is. No dates; git says when. [examples/ROADMAP.md](https://github.com/lowmagic/.github/blob/main/code-standards/examples/ROADMAP.md) shows the shape.
+- A deferred requirement stays in the spec and gets a later slice, not a stub in code.
 - A decision that's hard to undo gets an ADR in `docs/stack.md`.
 
 ## Deployment repos

@@ -87,9 +87,6 @@ Where Idea Machine doesn't follow the org standards yet. These are debt to pay d
   (`.github/workflows/test.yml`) installs the newest uv.
 - Versions and pins: the annotated tags `v1` and `v1.1` aren't `vX.Y.Z` or semver, so they aren't releases, though
   the README, [SPEC.md](SPEC.md) and [ROADMAP-v2.md](ROADMAP-v2.md) present them as V1's versions.
-- Versions and pins: `pyproject.toml` says `0.0.0`, and at the commits `v1` and `v1.1` tag it said `0.1.0`, so
-  neither tag matches the manifest's version.
-- Versions and pins: CI doesn't fail a `vX.Y.Z` tag that doesn't match `pyproject.toml`'s version. No job checks it.
 - Privacy: 14 files, among them `install/compose.yaml`, `dev/pull-stream.sh` and
   `src/im/sql/im/040_segment_names.sql`, name the workstation's hostname, and [deploy.md](deploy.md) (line 14) names
   the NAS's tailnet host, `truenas`.
@@ -105,8 +102,7 @@ Where Idea Machine doesn't follow the org standards yet. These are debt to pay d
 - Docs: [SPEC.md](SPEC.md) opens with its scope, not the problem, its requirements have no IDs, and it has no
   Unknowns or Open questions section.
 - Docs: [ROADMAP.md](ROADMAP.md) and [ROADMAP-v2.md](ROADMAP-v2.md) are arranged by phases and milestones, not
-  numbered slices with `Status:`, `Delivers:` and `Done when:`, and ROADMAP.md tracks progress with checkboxes and
-  dates.
+  numbered slices, and ROADMAP.md carries dates.
 - Docs: [ROADMAP-v2.md](ROADMAP-v2.md)'s milestones restate what they build instead of naming the
   [SPEC.md](SPEC.md) requirements they deliver, and M1's and M4's goals are internals (stable segment identity, Jev
   behind `judged_by`), not what I'd notice.
