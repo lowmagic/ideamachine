@@ -1,4 +1,4 @@
-<!-- lowmagic/.github code-standards/containers.md at 8401afa7edb4cc2232fdd0972fe079123e6c5002. Change it there, then run make sync-standards. -->
+<!-- lowmagic/.github code-standards/containers.md at cca8c65ba8c04cfe250b83b91ba69947f014e082. Change it there, then run make sync-standards. -->
 # Container standards
 
 Decisions for Dockerfiles and compose files, beneath the org [standards](https://github.com/lowmagic/.github/blob/main/code-standards/README.md). Python images also follow [python.md](https://github.com/lowmagic/.github/blob/main/code-standards/python.md): they install with `uv sync --frozen`, never pip.

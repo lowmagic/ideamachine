@@ -1,4 +1,4 @@
-<!-- lowmagic/.github code-standards/sql.md at 8401afa7edb4cc2232fdd0972fe079123e6c5002. Change it there, then run make sync-standards. -->
+<!-- lowmagic/.github code-standards/sql.md at cca8c65ba8c04cfe250b83b91ba69947f014e082. Change it there, then run make sync-standards. -->
 # SQL standards
 
 Decisions for SQL and the databases that hold it, beneath the org [standards](https://github.com/lowmagic/.github/blob/main/code-standards/README.md). In Python, [python.md](https://github.com/lowmagic/.github/blob/main/code-standards/python.md) also covers SQL: parameterized queries through `sqlite3` or psycopg 3, numbered `NNN_name.sql` migrations, and a scratch database for each test run.
