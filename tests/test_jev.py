@@ -58,7 +58,8 @@ def test_jev_drafts_a_sheet_from_structured_state(lattice_with_clusters, tmp_pat
     d = probe_audit.draft(lattice_with_clusters, client, tmp_path, "jev-1.14.0")
     assert d["draft"].endswith("draft-jev-1.14.0-pulls4-B1.json") and d["pairs"] == len(key["pairs"]) == len(sent)
     state = sent[0]["state"]
-    assert set(state) == {"a", "b"} and "summary" in state["a"] and isinstance(state["a"]["said"], list)
+    assert set(state) == {"a", "b"} and ({"summary", "my_summary"} & set(state["a"]))
+    assert isinstance(state["a"]["said"], list)
     got = json.loads((tmp_path / "draft-jev-1.14.0-pulls4-B1.json").read_text())
     assert all(a["answer"] == "yes" and a["p"] == 0.95 for a in got.values())
     r = probe_audit.score(tmp_path)["drafts"]["jev-1.14.0-pulls4-B1"]
@@ -77,7 +78,7 @@ def test_jev_drafts_a_sheet_from_structured_state(lattice_with_clusters, tmp_pat
     assert "auc" in probe_audit.score(tmp_path)["drafts"]["jev-1.14.0-pulls4-probes4-B1"]
     quotes, qsent = fake({})
     probe_audit.draft(lattice_with_clusters, quotes, tmp_path, "jev-1.14.0", quotes_only=True)
-    assert all("summary" not in b["state"]["a"] for b in qsent)
+    assert all(not ({"summary", "my_summary"} & set(b["state"][s])) for b in qsent for s in ("a", "b"))
 
 
 def test_the_route_decides_the_endpoint_key_and_model_name(monkeypatch):
