@@ -90,6 +90,12 @@ a synthesis makes it an idea, linked to what it was made from.
   below. A typed card, with no time said, is always there.
 - **Lit cards.** `/sky?lit=<ids>` lights those cards where they are, as a lens lights its results, and frames them.
   A thread's row and a grid cell link to it.
+- **Time slice.** A bar bounds the sky to ideas with any moment said between two dates, inclusive (`?from=` and
+  `?to=`, with date pickers and a two-ended scrubber), hiding undated typed cards while sliced.
+- **Constellations.** From a picked star (`Constellation`, `/sky?constellation=<id>`), its connection fan-out (1 to 4
+  hops) is isolated at its sky positions so clicking from star to star inspects each without losing the constellation;
+  `Backdrop` toggles the dimmed sky behind it. Stored lenses (`/sky?lens=<id>`) and lit sets isolate the same way, and
+  seed views (`/sky?seed=<id>`) offer the same backdrop toggle.
 
 ## Trails (`im web`, `/trails`)
 
@@ -120,7 +126,9 @@ edge; a trail shows the order.
   lights it. As a trail is drawn its head is a pulse with a short bright tail: each stop it reaches flares and is
   knocked the way the trail was going, then springs back. With reduced motion asked for, the stops only light.
 - A tap on one of the trail's own stops picks it. A tap on any other star lights it, ringed and named, and a second
-  tap goes to its conversation, so a stray tap while panning never leaves the trail.
+  tap goes to its conversation, so a stray tap while panning never leaves the trail. **Freeze** (`f`) locks the
+  current trail so tapping any star inspects it in place without switching conversations or re-running the draw
+  animation, and stepping to another trail draws it at once without moving the camera.
 - Nothing ranks: conversations come in the order they happened, and stars keep the sky's size and hue.
 - Positions are today's. A trail says when things were said, never where they sat on the map at the time, which is
   the same caution as double exposure below.

@@ -11,7 +11,8 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); o
 a { color: var(--accent); text-decoration: none; }
 button { font: inherit; color: var(--fg); background: none; border: 0; padding: 4px 9px; border-radius: 6px;
   cursor: pointer; }
-button:hover, button[aria-pressed=true] { background: rgba(255, 255, 255, .1); }
+button:hover { background: rgba(255, 255, 255, .1); }
+button[aria-pressed=true] { color: var(--bg); background: var(--accent); }
 button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 nav { position: fixed; top: max(12px, env(safe-area-inset-top)); left: 16px; display: flex; gap: 8px; flex-wrap: wrap;
   max-width: calc(100vw - 32px); }
@@ -25,6 +26,12 @@ nav a { padding: 4px 10px; }
   flex-direction: column; }
 #side header { padding: 12px 14px 8px; border-bottom: 1px solid var(--line); cursor: default; }
 #side header b { display: block; } #side header small { color: var(--muted); }
+#peek { padding: 8px 14px; border-bottom: 1px solid var(--line); background: rgba(157, 184, 255, .08); font-size: 13.5px; }
+#peek[hidden] { display: none; }
+#peek b { display: block; color: var(--fg); }
+#peek small { display: block; color: var(--muted); margin: 2px 0 4px; }
+#peek .links { display: flex; gap: 10px; flex-wrap: wrap; font-size: 12.5px; }
+#peek button { padding: 0; color: var(--accent); font-size: 12.5px; background: none; }
 #stops { list-style: none; margin: 0; padding: 4px 0 8px; overflow-y: auto; -webkit-overflow-scrolling: touch; }
 #stops li { display: grid; grid-template-columns: 1.6rem 1fr; gap: 0 6px; padding: 6px 14px; cursor: pointer; }
 #stops li:hover { background: rgba(255, 255, 255, .05); }
@@ -49,10 +56,13 @@ nav a { padding: 4px 10px; }
 <span><button id="prev" title="Earlier conversation (left arrow)" aria-label="Earlier conversation">◀</button
 ><button id="play" title="Play (space)" aria-pressed="false">Play</button
 ><button id="next" title="Later conversation (right arrow)" aria-label="Later conversation">▶</button></span>
+<button id="freeze" aria-pressed="false" title="Lock this trail so tapping stars or stepping trails inspects in place without redrawing (f)">Freeze</button>
 <button id="all" aria-pressed="false" title="Draw every conversation's trail, faintly">All trails</button>
 <button id="follow" aria-pressed="true" title="Move the camera to each conversation">Follow</button></nav>
 <canvas id="c"></canvas>
-<aside id="side" class="shut"><header><b id="when"></b><small id="what"></small></header><ol id="stops"></ol></aside>
+<aside id="side" class="shut"><header><b id="when"></b><small id="what"></small></header><div id="peek" hidden
+><b id="peekTitle"></b><small id="peekFacts"></small><div class="links"><a id="peekCard">card</a
+><a id="peekCross">crossroads</a><button id="peekGo" type="button" hidden>its trail</button></div></div><ol id="stops"></ol></aside>
 <div id="strip"><canvas id="s"></canvas></div>
 <script type="application/json" id="d">{data}</script>
 <script>
@@ -63,31 +73,28 @@ nav a { padding: 4px 10px; }
 const D = JSON.parse(document.getElementById("d").textContent);
 const S = D.stars.map(([id, x, y, size, title, facts]) => ({id, x, y: -y, size, title, facts, convs: [], links: []}));
 for (const [a, b, kinds] of D.links) { S[a].links.push({to: S[b], kinds}); S[b].links.push({to: S[a], kinds}); }
-const RADIUS = [1.6, 2.6, 3.6, 4.8];   // observation, candidate, pinned idea, canonical idea: as on the sky
+const RADIUS = [1.6, 2.6, 3.6, 4.8];
 const mx = S.reduce((a, s) => a + s.x, 0) / (S.length || 1), my = S.reduce((a, s) => a + s.y, 0) / (S.length || 1);
-for (const s of S) s.hue = Math.round((Math.atan2(s.y - my, s.x - mx) * 180 / Math.PI + 360) % 360);   // the sky's hue
+for (const s of S) s.hue = Math.round((Math.atan2(s.y - my, s.x - mx) * 180 / Math.PI + 360) % 360);
 
-// Conversations, in the order each began. A stop is one moment: a star, when, and who said it.
 const C = [];
 for (const [star, conv, t, who, heat] of D.moments) {
   const c = C[conv] || (C[conv] = {n: conv, stops: []});
   c.stops.push({s: S[star], t, who, heat});
   if (!S[star].convs.includes(conv)) { S[star].convs.push(conv); }
-  if (S[star].first === undefined) { S[star].first = t; S[star].firstConv = conv; }   // moments come in time order
+  if (S[star].first === undefined) { S[star].first = t; S[star].firstConv = conv; }
 }
-// A stop returns to a card when it's connected to one first said earlier, in another conversation: an echo, seen
-// from the later side. A stop with none is new ground as far as the connections know.
 for (const c of C) for (const k of c.stops) {
   k.back = k.s.links.filter(l => l.to.first !== undefined && l.to.first < k.t && l.to.firstConv !== c.n && k.s.firstConv === c.n)
     .sort((a, b) => b.to.first - a.to.first);
 }
-const SAMPLES = 14;   // points drawn between two stops
-for (const c of C) {   // the trail: a smooth curve through the stops, as points in map coordinates
+const SAMPLES = 14;
+for (const c of C) {
   const p = c.stops.map(k => k.s), path = [];
   for (let i = 0; i + 1 < p.length; i++) {
     const a = p[Math.max(i - 1, 0)], b = p[i], d = p[i + 1], e = p[Math.min(i + 2, p.length - 1)];
     const T = .3, m0x = T * (d.x - a.x), m0y = T * (d.y - a.y), m1x = T * (e.x - b.x), m1y = T * (e.y - b.y);
-    for (let j = 0; j < SAMPLES; j++) {   // a cardinal spline: gentle, so a trail doesn't swing wide of its stops
+    for (let j = 0; j < SAMPLES; j++) {
       const u = j / SAMPLES, u2 = u * u, u3 = u2 * u;
       const h0 = 2 * u3 - 3 * u2 + 1, h1 = u3 - 2 * u2 + u, h2 = -2 * u3 + 3 * u2, h3 = u3 - u2;
       path.push([h0 * b.x + h1 * m0x + h2 * d.x + h3 * m1x, h0 * b.y + h1 * m0y + h2 * d.y + h3 * m1y]);
@@ -100,10 +107,10 @@ for (const c of C) {   // the trail: a smooth curve through the stops, as points
 const c = document.getElementById("c"), g = c.getContext("2d");
 const strip = document.getElementById("s"), sg = strip.getContext("2d"), side = document.getElementById("side");
 let W = 0, H = 0, dpr = 1, cam = {x: 0, y: 0, k: 200}, goal = null;
-let cur = 0, stop = null, drawn = 1, playing = false, all = false, follow = true, started = 0, raf = 0;
-const GHOSTS = 5;   // how many earlier conversations stay as fading afterimages
+let cur = 0, stop = null, drawn = 1, playing = false, frozen = false, all = false, follow = true, started = 0, raf = 0;
+let peek = null;   // a star outside the locked trail, inspected in place while `frozen` is on
+const GHOSTS = 5;
 
-// Stars as the sky draws them: a white core, a faint halo of its color, and, when a trail lights it, four spikes.
 const HUES = 48, SPRITE = 128, REACH = 7, sprites = new Map();
 function sprite(hue, sharp) {
   const h = Math.round(hue / (360 / HUES)) % HUES, key = h * 2 + (sharp ? 1 : 0);
@@ -129,8 +136,6 @@ function sprite(hue, sharp) {
 }
 for (const s of S) { s.img = sprite(s.hue, false); s.sharp = sprite(s.hue, true); s.dx = s.dy = 0; }
 
-// The haze behind the stars is the stars themselves, blurred, as on the sky: summed once over the map's extent and
-// stretched with the camera.
 const HAZE = 160, haze = document.createElement("canvas"), hz = {x: 0, y: 0, w: 1, h: 1};
 if (S.length) {
   const xs = S.map(s => s.x), ys = S.map(s => s.y), x0 = Math.min(...xs), y0 = Math.min(...ys);
@@ -156,34 +161,31 @@ if (S.length) {
   q.putImageData(px, 0, 0);
 }
 
-// As a trail is drawn, its head is a pulse: each stop it reaches flares and is knocked the way the trail was going,
-// then springs back to its place, as a tapped star's neighbors do on the sky.
 const KNOCK = 9, SPRING = 260, DAMP = 150, FLARE = 420, SETTLE = 900, still = matchMedia("(prefers-reduced-motion: reduce)");
-let pulsed = -1e9;   // when the trail now being drawn set off
-let glint = null;    // a star tapped once: ringed and named, not yet picked
-const AGAIN = 36;    // a tap this near a lit star is a tap on it, whatever else is nearer
+let pulsed = -1e9;
+let glint = null;
+const AGAIN = 36;
 
 const narrow = () => W <= 760;
-// The part of the window the map is seen through: beside the list, above the strip.
 function view() {
   const stripH = 84, sideW = narrow() ? 0 : side.offsetWidth + 24;
   const bottom = stripH + (narrow() ? side.offsetHeight + 8 : 0);
   return {x: (W - sideW) / 2, y: 54 + (H - 54 - bottom) / 2, w: W - sideW, h: H - 54 - bottom};
 }
-function frame(stars, pad) {   // the camera that fits these stars in the view
+function frame(stars, pad) {
   const xs = stars.map(s => s.x), ys = stars.map(s => s.y), v = view();
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const k = Math.min(v.w / Math.max(x1 - x0, pad), v.h / Math.max(y1 - y0, pad)) * .78;
   return {k, x: (x0 + x1) / 2 - (v.x - W / 2) / k, y: (y0 + y1) / 2 - (v.y - H / 2) / k};
 }
 const sx = x => (x - cam.x) * cam.k + W / 2, sy = y => (y - cam.y) * cam.k + H / 2;
-let span = 1;   // the map's width, so a short trail isn't blown up to fill the window
+let span = 1;
 
 function trail(conv, upto, style, width) {
   const p = conv.path, n = Math.min(p.length - 1, Math.floor(upto * (p.length - 1)));
   if (n < 1) return;
   g.lineWidth = width; g.lineJoin = g.lineCap = "round";
-  const CHUNK = 7;   // a trail brightens toward its end, so its direction reads without arrowheads
+  const CHUNK = 7;
   for (let i = 0; i < n; i += CHUNK) {
     const j = Math.min(i + CHUNK, n);
     g.strokeStyle = style(.16 + .84 * Math.pow(j / (p.length - 1), 1.5));
@@ -201,10 +203,9 @@ function draw() {
   const grow = Math.min(2.2, .75 + .25 * Math.sqrt(cam.k / 200)) * Math.max(.6, Math.min(1, Math.min(W, H) / 800)), now = C[cur];
   g.globalCompositeOperation = "lighter";
   g.drawImage(haze, (hz.x - cam.x) * cam.k + W / 2, (hz.y - cam.y) * cam.k + H / 2, hz.w * cam.k, hz.h * cam.k);
-  // The pulse: how hard each stop of the trail being drawn flares, and how far it's knocked, since the head got there.
   const flare = new Map(), since0 = performance.now() - pulsed;
   for (const s of S) s.dx = s.dy = 0;
-  if (now && !still.matches && now.path.length > 1 && since0 < drawTime(now) + SETTLE) now.stops.forEach((k, i) => {
+  if (now && !frozen && !still.matches && now.path.length > 1 && since0 < drawTime(now) + SETTLE) now.stops.forEach((k, i) => {
     const since = since0 - i * SAMPLES / (now.path.length - 1) * drawTime(now);
     if (since <= 0 || since > SETTLE) return;
     flare.set(k.s, Math.max(flare.get(k.s) || 0, Math.exp(-since / FLARE)));
@@ -222,7 +223,7 @@ function draw() {
       g.stroke();
     }
   }
-  const lit = new Map(), heat = new Map();   // star -> how brightly a trail lights it; how loud my voice was there
+  const lit = new Map(), heat = new Map();
   for (let back = Math.min(GHOSTS, cur); back >= 1; back--) {
     const conv = C[cur - back], fade = Math.pow(.62, back);
     trail(conv, 1, a => `rgba(170, 180, 215, ${(.5 * fade * a).toFixed(3)})`, 1.2);
@@ -240,19 +241,19 @@ function draw() {
   for (const s of S) {
     const x = sx(s.x), y = sy(s.y);
     if (x < -40 || y < -40 || x > W + 40 || y > H + 40) continue;
-    const l = s === glint ? 1 : lit.get(s) || 0, f = flare.get(s) || 0, warm = heat.get(s) || 0;
+    const l = s === glint || s === peek ? 1 : lit.get(s) || 0, f = flare.get(s) || 0, warm = heat.get(s) || 0;
     const r = RADIUS[s.size] * grow * (1 + .35 * l) * (1 + .7 * f) * REACH, px = x + s.dx, py = y + s.dy;
-    if (warm) {   // how loud my voice was there: a wider glow
+    if (warm) {
       const wide = r * (1.4 + 1.6 * warm); g.globalAlpha = .5 * warm; g.drawImage(s.img, px - wide, py - wide, 2 * wide, 2 * wide);
     }
     g.globalAlpha = Math.min(1, .3 + .7 * l + f); g.drawImage(l > .6 ? s.sharp : s.img, px - r, py - r, 2 * r, 2 * r);
   }
   g.globalAlpha = 1; g.globalCompositeOperation = "source-over";
   if (!now) return;
-  if (drawn < 1 && now.path.length > 1) {   // the head of the trail as it's drawn
+  if (drawn < 1 && now.path.length > 1) {
     const at = Math.floor(drawn * (now.path.length - 1)), [hx, hy] = now.path[at];
     g.lineCap = "round";
-    for (let i = Math.max(1, at - 9); i <= at; i++) {   // a short bright tail behind it
+    for (let i = Math.max(1, at - 9); i <= at; i++) {
       g.strokeStyle = `rgba(255, 255, 255, ${(.08 * (i - at + 10)).toFixed(2)})`; g.lineWidth = 1 + .25 * (i - at + 10);
       g.beginPath(); g.moveTo(sx(now.path[i - 1][0]), sy(now.path[i - 1][1])); g.lineTo(sx(now.path[i][0]), sy(now.path[i][1])); g.stroke();
     }
@@ -262,12 +263,12 @@ function draw() {
   if (stop !== null && now.stops[stop]) {
     const k = now.stops[stop];
     g.setLineDash([3, 4]); g.lineWidth = 1; g.strokeStyle = "rgba(157, 184, 255, .8)";
-    for (const l of k.back) {   // what it returns to: said earlier, in another conversation
+    for (const l of k.back) {
       g.beginPath(); g.moveTo(sx(k.s.x), sy(k.s.y)); g.lineTo(sx(l.to.x), sy(l.to.y)); g.stroke();
       g.globalAlpha = 1; const r = 9; g.drawImage(l.to.img, sx(l.to.x) - r, sy(l.to.y) - r, 2 * r, 2 * r);
     }
     g.setLineDash([]);
-    g.lineWidth = 2.4; g.strokeStyle = "#fff"; g.lineJoin = g.lineCap = "round";   // the legs in and out
+    g.lineWidth = 2.4; g.strokeStyle = "#fff"; g.lineJoin = g.lineCap = "round";
     const from = Math.max(0, (stop - 1) * SAMPLES), to = Math.min(now.path.length - 1, (stop + 1) * SAMPLES, Math.floor(reached));
     if (to > from) {
       g.beginPath(); g.moveTo(sx(now.path[from][0]), sy(now.path[from][1]));
@@ -275,14 +276,20 @@ function draw() {
       g.stroke();
     }
   }
-  // Each stop's number (on a long trail, only around the stop picked and at its ends), and the picked stop's title
-  // with its neighbors', or the first and last.
+  if (peek) {   // an outside star inspected while frozen: show any connections it shares with the locked trail
+    const trailStars = new Set(now.stops.map(k => k.s));
+    g.setLineDash([3, 4]); g.lineWidth = 1.1; g.strokeStyle = "rgba(157, 184, 255, .75)";
+    for (const l of peek.links) if (trailStars.has(l.to)) {
+      g.beginPath(); g.moveTo(sx(peek.x), sy(peek.y)); g.lineTo(sx(l.to.x), sy(l.to.y)); g.stroke();
+    }
+    g.setLineDash([]);
+  }
   g.textBaseline = "middle";
   const label = (text, x, y, bold) => {
     const t = text.length > 44 ? text.slice(0, 42) + "…" : text, edge = narrow() ? W - 8 : side.offsetLeft - 8;
     g.font = "12px system-ui, sans-serif"; g.fillStyle = bold ? "#fff" : "rgba(232, 234, 242, .82)";
     g.lineWidth = 3; g.strokeStyle = "rgba(7, 9, 16, .85)"; g.lineJoin = "round";
-    if (x + g.measureText(t).width > edge && x > W / 3) {   // no room to its right: the title goes to its left
+    if (x + g.measureText(t).width > edge && x > W / 3) {
       g.textAlign = "right"; g.strokeText(t, x - 30, y); g.fillText(t, x - 30, y); g.textAlign = "left";
     } else { g.strokeText(t, x, y); g.fillText(t, x, y); }
   };
@@ -290,7 +297,7 @@ function draw() {
     if (i * SAMPLES > reached + .5) return;
     const x = sx(k.s.x), y = sy(k.s.y), ends = i === 0 || i === now.stops.length - 1;
     const near = stop !== null && Math.abs(i - stop) <= 1, named = stop === null ? ends : near;
-    if (k.back.length && !seen.has(k.s)) {   // a return: a ring
+    if (k.back.length && !seen.has(k.s)) {
       g.strokeStyle = "rgba(157, 184, 255, .9)"; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 7, 0, 7); g.stroke();
     }
     if (stop === i) { g.strokeStyle = "#fff"; g.lineWidth = 1.4; g.beginPath(); g.arc(x, y, 11, 0, 7); g.stroke(); }
@@ -303,17 +310,19 @@ function draw() {
     }
     if (named) label(k.s.title || "hidden", x + 8 + 7 * String(i + 1).length + 4, y - 9, stop === i);
   });
-  if (glint) {   // tapped once: ringed and named; a second tap goes to its conversation
+  if (peek) {
+    const x = sx(peek.x), y = sy(peek.y);
+    g.strokeStyle = "rgba(157, 184, 255, .95)"; g.lineWidth = 1.4; g.beginPath(); g.arc(x, y, 11, 0, 7); g.stroke();
+    label(peek.title || "hidden", x + 15, y, true);
+  }
+  if (glint) {
     const x = sx(glint.x), y = sy(glint.y);
     g.strokeStyle = "rgba(255, 255, 255, .7)"; g.lineWidth = 1; g.beginPath(); g.arc(x, y, 11, 0, 7); g.stroke();
-    g.strokeStyle = "rgba(255, 255, 255, .16)"; g.beginPath(); g.arc(x, y, AGAIN, 0, 7); g.stroke();   // where a tap picks it
+    g.strokeStyle = "rgba(255, 255, 255, .16)"; g.beginPath(); g.arc(x, y, AGAIN, 0, 7); g.stroke();
     label(glint.title || "hidden", x + 15, y, false);
   }
 }
 
-// The strip: one column per conversation, in order, a block per stop in its star's hue, dim where the stop returns to
-// something said before. So it shows at a glance how much each conversation held, which parts of the map it visited
-// and how much of it was new ground; months are marked where they begin.
 const fmtMonth = new Intl.DateTimeFormat(undefined, {month: "short", year: "2-digit"});
 function drawStrip() {
   if (!C.length) return;
@@ -334,7 +343,7 @@ function drawStrip() {
       sg.fillRect(x, h - 4 - (j + 1) * unit, Math.max(col - (col > 3 ? 1 : 0), 1), Math.max(unit - (unit > 3 ? 1 : 0), 1));
     });
   });
-  sg.fillStyle = "#fff"; sg.fillRect(cur * col + col / 2 - 1, h - 3, 2, 3);   // the marker: where we are
+  sg.fillStyle = "#fff"; sg.fillRect(cur * col + col / 2 - 1, h - 3, 2, 3);
   sg.fillRect(cur * col + col / 2 - .5, top, 1, Math.max(room - C[cur].stops.length * unit - 2, 0));
 }
 
@@ -347,6 +356,16 @@ function gap(seconds) {
   }
   return "";
 }
+function showPeek() {
+  const box = document.getElementById("peek");
+  box.hidden = !peek;
+  if (!peek) return;
+  document.getElementById("peekTitle").textContent = peek.title || "hidden";
+  document.getElementById("peekFacts").textContent = peek.facts || "";
+  document.getElementById("peekCard").href = "/idea/" + peek.id;
+  document.getElementById("peekCross").href = "/crossroads/" + peek.id;
+  document.getElementById("peekGo").hidden = !peek.convs.length;
+}
 function list() {
   const conv = C[cur], first = conv.stops[0].t * 1000, last = conv.stops[conv.stops.length - 1].t * 1000;
   document.getElementById("when").textContent = fmtDay.format(first);
@@ -357,7 +376,7 @@ function list() {
     + ` · conversation ${cur + 1} of ${C.length}`;
   const ol = document.getElementById("stops"); ol.textContent = "";
   conv.stops.forEach((k, i) => {
-    if (i && k.t - conv.stops[i - 1].t >= 600) {   // a pause worth showing: ten minutes or more
+    if (i && k.t - conv.stops[i - 1].t >= 600) {
       const li = document.createElement("li"); li.className = "gap"; li.textContent = gap(k.t - conv.stops[i - 1].t) + " later";
       ol.append(li);
     }
@@ -368,7 +387,7 @@ function list() {
     for (const [name, href] of [["card", "/idea/" + k.s.id], ["crossroads", "/crossroads/" + k.s.id]]) {
       const a = document.createElement("a"); a.textContent = name; a.href = href; small.append(a);
     }
-    if (k.heat >= 0) {   // how loud my voice was: a fact about the voice, not about the thought
+    if (k.heat >= 0) {
       const bar = document.createElement("u"); bar.style.width = Math.round(6 + 34 * k.heat) + "px";
       bar.title = "arousal in my voice"; small.prepend(bar);
     }
@@ -389,18 +408,19 @@ function mark() {
   }
 }
 
-// Showing a conversation: its list, the strip's marker, the camera gliding to it, and the trail drawing itself.
+// Showing a conversation: when `frozen` is on, switching trails draws at once with no pulse or camera pan.
 function show(i, picked, instant) {
   cur = Math.max(0, Math.min(i, C.length - 1)); stop = picked === undefined ? null : picked;
-  const conv = C[cur];
+  peek = null; showPeek();
+  const conv = C[cur], snap = instant || frozen;
   list(); mark(); drawStrip();
   history.replaceState(null, "", "/trails?at=" + conv.stops[stop || 0].s.id);
-  if (follow) {
-    const ghosts = C.slice(Math.max(0, cur - 1), cur).flatMap(x => x.stops.map(k => k.s));   // keep the last one in sight
+  if (follow && !frozen) {
+    const ghosts = C.slice(Math.max(0, cur - 1), cur).flatMap(x => x.stops.map(k => k.s));
     goal = frame(conv.stops.map(k => k.s).concat(conv.stops.length < 3 ? ghosts : []), span * .22);
     if (instant) { cam = goal; goal = null; }
   }
-  drawn = instant || conv.stops.length < 2 ? 1 : 0; started = performance.now(); glint = null;
+  drawn = snap || conv.stops.length < 2 ? 1 : 0; started = performance.now(); glint = null;
   if (!drawn) pulsed = started;
   tick();
 }
@@ -413,13 +433,13 @@ function step(t) {
   raf = 0;
   const conv = C[cur]; let more = false;
   if (goal) {
-    const e = .14;   // ease toward the goal; zoom eases in log space so it feels even
+    const e = .14;
     cam.x += (goal.x - cam.x) * e; cam.y += (goal.y - cam.y) * e; cam.k *= Math.pow(goal.k / cam.k, e);
     if (Math.abs(goal.x - cam.x) * cam.k < .5 && Math.abs(goal.y - cam.y) * cam.k < .5 && Math.abs(goal.k / cam.k - 1) < .003) { cam = goal; goal = null; }
     else more = true;
   }
   if (drawn < 1) { drawn = Math.min(1, (t - started) / drawTime(conv)); more = more || drawn < 1; }
-  if (!still.matches && performance.now() - pulsed < drawTime(conv) + SETTLE) more = true;   // the stops are still settling
+  if (!frozen && !still.matches && performance.now() - pulsed < drawTime(conv) + SETTLE) more = true;
   draw();
   if (playing) {
     const hold = conv.stops.length < 2 ? 650 : drawTime(conv) + 900;
@@ -431,11 +451,24 @@ function step(t) {
   if (more) tick();
 }
 function play(on) {
+  if (on && frozen) setFrozen(false);
   playing = on;
   const b = document.getElementById("play"); b.textContent = on ? "Pause" : "Play"; b.setAttribute("aria-pressed", on);
   if (on) { if (cur + 1 >= C.length) show(0); else { started = performance.now(); tick(); } }
 }
 const redraw = tick;
+
+function setFrozen(on) {
+  frozen = on;
+  document.getElementById("freeze").setAttribute("aria-pressed", on);
+  if (on) {
+    if (playing) play(false);
+    drawn = 1; pulsed = -1e9; goal = null; glint = null;
+  } else {
+    peek = null; showPeek();
+  }
+  redraw();
+}
 
 function resize() {
   dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight;
@@ -451,23 +484,28 @@ function hit(px, py) {
   let best = null, bestD = Infinity;
   const mine = new Set(C[cur].stops.map(k => k.s));
   for (const s of S) {
-    if (!s.convs.length) continue;   // a star with no moment (typed, or hidden in demo mode) is on no trail
-    const d = Math.hypot(sx(s.x) - px, sy(s.y) - py) - (mine.has(s) ? 6 : 0);   // this trail's stops win a near tie
+    if (!frozen && !s.convs.length) continue;
+    const d = Math.hypot(sx(s.x) - px, sy(s.y) - py) - (mine.has(s) ? 6 : 0);
     if (d < bestD) { best = s; bestD = d; }
   }
   return bestD <= 18 ? best : null;
 }
-function pick(s) {   // a star tapped: its stop on this trail, or else the latest conversation that passed through it
-  if (!s) { stop = null; mark(); redraw(); return; }
+function pick(s) {
+  if (!s) { stop = null; peek = null; showPeek(); mark(); redraw(); return; }
   const here = C[cur].stops.findIndex(k => k.s === s);
-  if (here >= 0) { stop = here; mark(); history.replaceState(null, "", "/trails?at=" + s.id); redraw(); return; }
+  if (here >= 0) { stop = here; peek = null; showPeek(); mark(); history.replaceState(null, "", "/trails?at=" + s.id); redraw(); return; }
+  if (frozen) {   // locked: inspect this outside star in place without leaving the trail or redrawing
+    stop = null; peek = s; showPeek(); mark(); redraw();
+    return;
+  }
   const conv = s.convs[s.convs.length - 1];
   play(false); show(conv, C[conv].stops.findIndex(k => k.s === s));
 }
 
-// A tap on one of this trail's stops picks it. A tap on any other star only lights it, and a second tap goes to its
-// conversation, so a stray tap while panning never leaves the trail. A tap on nothing puts the lit star out.
+// While frozen, any star tapped inspects in place without switching conversations; otherwise a second tap on an
+// outside star switches to its conversation as before.
 function tap(s) {
+  if (frozen) { glint = null; pick(s); return; }
   if (s && s !== glint && !C[cur].stops.some(k => k.s === s)) { glint = s; redraw(); }
   else if (s) { glint = null; pick(s); }
   else if (glint) { glint = null; redraw(); }
@@ -506,7 +544,6 @@ c.addEventListener("pointercancel", up);
 c.addEventListener("wheel", e => { e.preventDefault(); zoom(Math.exp(-e.deltaY / 400), e.clientX, e.clientY); },
                    {passive: false});
 
-// Dragging along the strip goes to the conversation under the pointer.
 const box = document.getElementById("strip");
 let scrub = false;
 const at = e => Math.floor((e.clientX - strip.getBoundingClientRect().left) / (strip.clientWidth / C.length));
@@ -518,14 +555,20 @@ box.addEventListener("pointercancel", () => { scrub = false; });
 document.getElementById("stops").addEventListener("click", e => {
   const li = e.target.closest("li[data-stop]");
   if (!li || e.target.closest("a")) return;
-  stop = Number(li.dataset.stop); mark();
-  if (follow) goal = frame(C[cur].stops.map(k => k.s), span * .22);
+  stop = Number(li.dataset.stop); peek = null; showPeek(); mark();
+  if (follow && !frozen) goal = frame(C[cur].stops.map(k => k.s), span * .22);
   redraw();
 });
-side.querySelector("header").addEventListener("click", () => { side.classList.toggle("shut"); if (follow) show(cur, stop, false); });
+document.getElementById("peekGo").addEventListener("click", () => {
+  if (!peek || !peek.convs.length) return;
+  const s = peek, conv = s.convs[s.convs.length - 1];
+  show(conv, C[conv].stops.findIndex(k => k.s === s), true);
+});
+side.querySelector("header").addEventListener("click", () => { side.classList.toggle("shut"); if (follow && !frozen) show(cur, stop, false); });
 document.getElementById("prev").addEventListener("click", () => { play(false); show(cur - 1); });
 document.getElementById("next").addEventListener("click", () => { play(false); show(cur + 1); });
 document.getElementById("play").addEventListener("click", () => play(!playing));
+document.getElementById("freeze").addEventListener("click", () => setFrozen(!frozen));
 function toggle(id, set) {
   document.getElementById(id).addEventListener("click", e => {
     const on = e.currentTarget.getAttribute("aria-pressed") !== "true";
@@ -533,19 +576,19 @@ function toggle(id, set) {
   });
 }
 toggle("all", on => { all = on; });
-toggle("follow", on => { follow = on; if (on) show(cur, stop, false); else { goal = frame(S, span); } });
+toggle("follow", on => { follow = on; if (on && !frozen) show(cur, stop, false); else if (!on && !frozen) { goal = frame(S, span); } });
 addEventListener("keydown", e => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
   if (e.key === "ArrowLeft") { play(false); show(cur - 1); }
   else if (e.key === "ArrowRight") { play(false); show(cur + 1); }
   else if (e.key === " ") { e.preventDefault(); play(!playing); }
+  else if (e.key === "f" || e.key === "F") setFrozen(!frozen);
 });
 addEventListener("resize", resize);
 
 if (C.length) {
   span = Math.max(...S.map(s => s.x)) - Math.min(...S.map(s => s.x)) || 1;
   dpr = window.devicePixelRatio || 1; W = innerWidth; H = innerHeight; c.width = W * dpr; c.height = H * dpr;
-  // Open on the card asked for (its latest conversation), or on the latest conversation with somewhere to go.
   const asked = D.at && S.find(s => s.id === D.at && s.convs.length);
   let first = C.length - 1;
   while (!asked && first > 0 && C[first].stops.length < 3) first--;
