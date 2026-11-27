@@ -99,29 +99,28 @@ for ds in "$NAS_POOL_DATASET/config" "$NAS_POOL_DATASET/pg" "$NAS_POOL_DATASET/b
 done
 [ -d "$NAS_CONFIG" ] && [ -d "$NAS_PG" ] && [ -d "$NAS_BACKUPS" ] || die "datasets not mounted under $NAS_ROOT"
 chown root:root "$NAS_CONFIG"; chmod 700 "$NAS_CONFIG"
-# Backups hold everyone's words: root and the apps group only. setgid + group-writable so a member of the apps
-# group (the operator, over ssh) can drop the database from eeyore here.
-chown "root:$APPS_GID" "$NAS_BACKUPS"; chmod 2770 "$NAS_BACKUPS"
-# saved/: root and apps only (it quotes people). Setgid + default POSIX ACL so anything written here by root, admin,
-# or the apps container inherits group apps with rwX and stays closed to other regardless of umask.
+# Backups hold everyone's words: root and the ideamachine group only. setgid + group-writable so a member of the
+# ideamachine group (the operator, over ssh) can drop the database from eeyore here.
+chown "root:$IM_GID" "$NAS_BACKUPS"; chmod 2770 "$NAS_BACKUPS"
+# saved/: root and ideamachine only (it quotes people). Setgid + default POSIX ACL so anything written here by root,
+# admin, or the ideamachine container inherits group ideamachine with rwX and stays closed to other regardless of umask.
 mkdir -p "$NAS_SAVED"
-chown "root:$APPS_GID" "$NAS_SAVED"
+chown "root:$IM_GID" "$NAS_SAVED"
 chmod 2770 "$NAS_SAVED"
-setfacl -d -m "u::rwx,g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" "$NAS_SAVED"
-find "$NAS_SAVED" -mindepth 1 -type d -exec chgrp "$APPS_GID" {} + -exec chmod 2770 {} + \
-    -exec setfacl -m "g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" {} + \
-    -exec setfacl -d -m "u::rwx,g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" {} +
-find "$NAS_SAVED" -mindepth 1 -type f -exec chgrp "$APPS_GID" {} + \
-    -exec setfacl -m "g::rwX,g:${APPS_GID}:rwX,m::rwX,o::---" {} +
-# access/: connection files for other programs on the NAS, run by a member of the apps group (admin), who can't
-# reach config/. Root and apps only.
-mkdir -p "$NAS_ACCESS"; chown "root:$APPS_GID" "$NAS_ACCESS"; chmod 750 "$NAS_ACCESS"
-# pg: Postgres runs as the apps user (install/compose.yaml). Data from before that change belongs to uid 999
-# (`netdata` on TrueNAS); hand it over once, with the database stopped.
-if [ "$(stat -c %u "$NAS_PG")" != "$APPS_UID" ]; then
+setfacl -d -m "u::rwx,g::rwx,g:${IM_GID}:rwx,m::rwx,o::---" "$NAS_SAVED"
+find "$NAS_SAVED" -mindepth 1 -type d -exec chgrp "$IM_GID" {} + -exec chmod 2770 {} + \
+    -exec setfacl -m "g::rwx,g:${IM_GID}:rwx,m::rwx,o::---" {} + \
+    -exec setfacl -d -m "u::rwx,g::rwx,g:${IM_GID}:rwx,m::rwx,o::---" {} +
+find "$NAS_SAVED" -mindepth 1 -type f -exec chgrp "$IM_GID" {} + \
+    -exec setfacl -m "g::rwX,g:${IM_GID}:rwX,m::rwX,o::---" {} +
+# access/: connection files for other programs on the NAS, run by a member of the ideamachine group, who can't
+# reach config/. Root and ideamachine only.
+mkdir -p "$NAS_ACCESS"; chown "root:$IM_GID" "$NAS_ACCESS"; chmod 750 "$NAS_ACCESS"
+# pg: Postgres runs as the ideamachine user (install/compose.yaml). Hand it over once, with the database stopped.
+if [ "$(stat -c %u "$NAS_PG")" != "$IM_UID" ]; then
     "${COMPOSE[@]}" stop db >/dev/null 2>&1 || true
-    chown -R "$APPS_UID:$APPS_GID" "$NAS_PG"
-    echo "pg now belongs to the apps user"
+    chown -R "$IM_UID:$IM_GID" "$NAS_PG"
+    echo "pg now belongs to the ideamachine user"
 fi
 chmod 700 "$NAS_PG"
 
@@ -188,7 +187,7 @@ touch "$NAS_CONFIG/cloudflared.env"; chmod 600 "$NAS_CONFIG/cloudflared.env"
 # The read-only role's connection, through Postgres on the loopback, for other programs on the NAS: the apps group
 # can read it, nobody else. Rewritten on every run from db.env.
 reader_pw="$(env_get "$NAS_DB_ENV" IM_READER_PASSWORD)"
-install -o root -g "$APPS_GID" -m 640 /dev/stdin "$NAS_READER_ENV" <<EOF
+install -o root -g "$IM_GID" -m 640 /dev/stdin "$NAS_READER_ENV" <<EOF
 # Written by install/nas.sh on every run. Role im_reader reads schema pub and nothing else (docs/deploy.md).
 IM_READER_DATABASE_URL=postgresql://im_reader:$reader_pw@127.0.0.1:$DB_LOOPBACK_PORT/im
 PGHOST=127.0.0.1
@@ -198,9 +197,9 @@ PGUSER=im_reader
 PGPASSWORD=$reader_pw
 EOF
 
-# Idea Machine's own config: readable by the pipeline (the apps group), not secret, but personal, so not in the repo.
+# Idea Machine's own config: readable by the pipeline (the ideamachine group), not secret, but personal, so not in the repo.
 mkdir -p "$NAS_CONFIG/im"
-chown "root:$APPS_GID" "$NAS_CONFIG/im"; chmod 750 "$NAS_CONFIG/im"
+chown "root:$IM_GID" "$NAS_CONFIG/im"; chmod 750 "$NAS_CONFIG/im"
 if [ ! -f "$NAS_CONFIG/im/im.toml" ]; then
     cat > "$NAS_CONFIG/im/im.toml" <<'TOML'
 # Idea Machine's config. Every key and its default is in src/im/config.py. Kept out of the repo: it's personal.
@@ -226,7 +225,7 @@ if [ ! -f "$NAS_CONFIG/im/im.toml" ]; then
 TOML
     echo "created $NAS_CONFIG/im/im.toml"
 fi
-chown "root:$APPS_GID" "$NAS_CONFIG/im/im.toml"; chmod 640 "$NAS_CONFIG/im/im.toml"
+chown "root:$IM_GID" "$NAS_CONFIG/im/im.toml"; chmod 640 "$NAS_CONFIG/im/im.toml"
 
 # From / as cron does, so this is the stream the hourly run will mount. (After the secrets: compose reads env files.)
 (cd / && "${COMPOSE[@]}" --profile tools config) | grep -F "source: $HEARSAY_STREAM" >/dev/null \
@@ -307,8 +306,8 @@ say "ChatGPT's connector ranges"
 # the file can be replaced whole.
 MCP_DIR="$NAS_CONFIG/mcp"
 RANGES="$MCP_DIR/chatgpt-ranges.txt"
-mkdir -p "$MCP_DIR"; chown "root:$APPS_GID" "$MCP_DIR"; chmod 750 "$MCP_DIR"
-touch "$RANGES"; chown "root:$APPS_GID" "$RANGES"; chmod 640 "$RANGES"
+mkdir -p "$MCP_DIR"; chown "root:$IM_GID" "$MCP_DIR"; chmod 750 "$MCP_DIR"
+touch "$RANGES"; chown "root:$IM_GID" "$RANGES"; chmod 640 "$RANGES"
 PUBLIC_URL="$(env_get "$NAS_WEB_ENV" IM_PUBLIC_URL)"
 if [ -z "$PUBLIC_URL" ]; then
     echo "not needed: the public listener is off"
@@ -317,7 +316,7 @@ import ipaddress, json, sys
 nets = [str(ipaddress.ip_network(p.get("ipv4Prefix") or p["ipv6Prefix"])) for p in json.load(sys.stdin)["prefixes"]]
 assert nets, "no prefixes"
 print("\n".join(nets))' > "$RANGES.part"; then
-    chown "root:$APPS_GID" "$RANGES.part"; chmod 640 "$RANGES.part"; mv -f "$RANGES.part" "$RANGES"
+    chown "root:$IM_GID" "$RANGES.part"; chmod 640 "$RANGES.part"; mv -f "$RANGES.part" "$RANGES"
     echo "$(wc -l < "$RANGES") networks from openai.com/chatgpt-connectors.json in $RANGES"
 else
     rm -f "$RANGES.part"
@@ -450,10 +449,10 @@ out="$(reader_sql "SELECT 1" -e "IM_READER_DATABASE_URL=postgresql://im_reader:w
     2>&1)" && die "the read-only role logged in on 127.0.0.1:$DB_LOOPBACK_PORT with a wrong password"
 grep -q "password authentication failed" <<<"$out" \
     || die "a wrong password on 127.0.0.1:$DB_LOOPBACK_PORT failed, but not as a wrong password: $out"
-setpriv --reuid=65534 --regid="$APPS_GID" --clear-groups test -r "$NAS_READER_ENV" \
-    || die "the apps group can't read $NAS_READER_ENV"
+setpriv --reuid=65534 --regid="$IM_GID" --clear-groups test -r "$NAS_READER_ENV" \
+    || die "the ideamachine group can't read $NAS_READER_ENV"
 if setpriv --reuid=65534 --regid=65534 --clear-groups test -r "$NAS_READER_ENV"; then
-    die "$NAS_READER_ENV is readable outside the apps group"
+    die "$NAS_READER_ENV is readable outside the ideamachine group"
 fi
 cards="$(reader_sql "SELECT count(*) FROM pub.cards")" \
     || die "the read-only role couldn't read pub.cards on 127.0.0.1:$DB_LOOPBACK_PORT"

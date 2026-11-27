@@ -16,9 +16,9 @@ services:
     image: pgvector/pgvector:pg16
     container_name: ideamachine-db
     logging: *logging
-    # The apps user, like the other containers: the image's own postgres uid (999) is `netdata` on TrueNAS, which
+    # Dedicated ideamachine NAS user (infra ADR-025): the image's own postgres uid (999) is `netdata` on TrueNAS, which
     # would let the monitoring agent read the database files. The image supports any uid that owns the data dir.
-    user: "568:568"
+    user: "3104:3104"
     env_file: /mnt/fast/ideamachine/config/db.env
     environment:
       POSTGRES_DB: im
@@ -43,7 +43,10 @@ services:
     profiles: ["tools"]
     logging: *logging   # the cron job also sends this output to the journal, as -t ideamachine-run
     init: true   # forwards stop signals: Python as PID 1 ignores them
-    user: "568:568"
+    user: "3104:3104"
+    # hearsay-stream (3102) grants read-only access to Hearsay's text stream, never audio.
+    group_add:
+      - "3102"
     env_file: /mnt/fast/ideamachine/config/pipeline.env
     environment:
       IM_STREAM_DIR: /data/stream
@@ -65,7 +68,7 @@ services:
     container_name: ideamachine-web
     logging: *logging
     init: true
-    user: "568:568"
+    user: "3104:3104"
     env_file: /mnt/fast/ideamachine/config/web.env   # IM_WEB_DATABASE_URL, IM_WEB_TOKEN, IM_PUBLIC_URL (optional)
     environment:
       TZ: America/New_York
