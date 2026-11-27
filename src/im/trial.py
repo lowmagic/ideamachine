@@ -204,6 +204,108 @@ def review_live(conn, review_client, system: str, model: str, effort: str,
     return stats
 
 
+def _protected_items(conn) -> set[uuid.UUID]:
+    """Items attached to a card I kept, starred, corrected or noted, or with a keep/star item verdict: never dropped
+    by apply_review."""
+    return {r[0] for r in conn.execute(
+        """SELECT DISTINCT ev.item_id
+           FROM im.idea_evidence ev
+           LEFT JOIN im.idea_kept k USING (idea_id)
+           LEFT JOIN im.idea_text tx USING (idea_id)
+           WHERE k.kept_as IS NOT NULL OR tx.corrected_at IS NOT NULL
+           UNION
+           SELECT v.item_id FROM (
+             SELECT DISTINCT ON (item_id) item_id, verdict
+             FROM im.item_verdicts ORDER BY item_id, decided_at DESC, verdict_id DESC
+           ) v WHERE v.verdict IN ('keep', 'star')""")}
+
+
+def apply_review(conn, system: str, model: str, effort: str, review_model: str,
+                 review_effort: str = extract.ExtractConfig.review_effort,
+                 review_system: str = extract.REVIEW_SYSTEM, replicate: int = 1,
+                 schema: dict = extract.SCHEMA_V5, dry_run: bool = False) -> dict:
+    """Apply a completed `--review-live` trial (im.prompt_trials) onto live im.items and im.extractions.
+
+    Kept items keep their item_id (preserving matches, evidence, observations and verdicts) and update their gist,
+    source segments and prompt_version; dropped items are deleted (cascading their evidence and match rows so cards
+    with no remaining evidence disappear from pub.cards), unless protected by user feedback (kept, starred, corrected
+    or noted). Idempotent: already-applied episodes are skipped."""
+    ref_pv = extract.prompt_version(model, effort, system, schema)
+    cand_pv = version(model, effort, system, replicate, schema, review_model, review_effort, review_system)
+    policy = egress.POLICY_VERSION
+    rows = conn.execute(
+        """SELECT t.episode_id, t.payload_sha256, t.egress_id, t.items
+           FROM im.prompt_trials t
+           JOIN im.episodes e ON e.episode_id = t.episode_id AND e.current
+           JOIN im.extractions x ON x.episode_id = t.episode_id AND x.model = t.model
+             AND x.prompt_version = %s AND x.privacy_policy_version = t.privacy_policy_version
+             AND x.input_hash = t.payload_sha256
+           WHERE t.prompt_version = %s AND t.model = %s AND t.privacy_policy_version = %s
+           ORDER BY t.episode_id""",
+        (ref_pv, cand_pv, model, policy)).fetchall()
+    protected_ids = _protected_items(conn)
+    cards_before = conn.execute("SELECT count(*) FROM pub.cards").fetchone()[0]
+    stats = {"model": model, "from_prompt_version": ref_pv, "to_prompt_version": cand_pv, "dry_run": dry_run,
+             "episodes": len(rows), "items_before": 0, "items_after": 0, "items_deleted": 0,
+             "gists_updated": 0, "protected_by_feedback": 0, "cards_before": cards_before}
+    for eid, sha, trial_egress_id, trial_items in rows:
+        live_rows = conn.execute(
+            """SELECT item_id, quote, gist, source_segment_ids FROM im.items
+               WHERE episode_id = %s AND model = %s AND prompt_version = %s AND privacy_policy_version = %s""",
+            (eid, model, ref_pv, policy)).fetchall()
+        stats["items_before"] += len(live_rows)
+        # Match each reviewed item one-to-one to its live item (exact quote first, then quote_score fallback).
+        scored = sorted(
+            ((quote != it["quote"], -quote_score(quote, it["quote"]), str(item_id), n, item_id)
+             for item_id, quote, _, segs in live_rows for n, it in enumerate(trial_items)
+             if {str(s) for s in segs} & set(it["source_segment_ids"])))
+        kept_by_id: dict[uuid.UUID, dict] = {}
+        used_n: set[int] = set()
+        for exact_miss, neg_score, _, n, item_id in scored:
+            if (not exact_miss or -neg_score >= CARRY_MIN_SCORE) and n not in used_n and item_id not in kept_by_id:
+                kept_by_id[item_id] = trial_items[n]
+                used_n.add(n)
+        live_by_id = {r[0]: r for r in live_rows}
+        protected = [iid for iid in live_by_id if iid not in kept_by_id and iid in protected_ids]
+        to_delete = [iid for iid in live_by_id if iid not in kept_by_id and iid not in protected_ids]
+        gists_changed = sum(1 for iid, it in kept_by_id.items() if it["gist"] != live_by_id[iid][2])
+        stats["items_after"] += len(kept_by_id) + len(protected)
+        stats["items_deleted"] += len(to_delete)
+        stats["gists_updated"] += gists_changed
+        stats["protected_by_feedback"] += len(protected)
+        if dry_run:
+            continue
+        with conn.transaction():
+            for iid, it in kept_by_id.items():
+                conn.execute(
+                    """UPDATE im.items
+                       SET prompt_version = %s, gist = %s, source_segment_ids = %s::uuid[],
+                           reading = coalesce(%s, reading), attributed_to = coalesce(%s, attributed_to),
+                           mishearings = coalesce(%s::jsonb, mishearings)
+                       WHERE item_id = %s""",
+                    (cand_pv, it["gist"], it["source_segment_ids"], it.get("reading"), it.get("attributed_to"),
+                     None if "mishearings" not in it else json.dumps(it["mishearings"]), iid))
+            if protected:
+                conn.execute("UPDATE im.items SET prompt_version = %s WHERE item_id = ANY(%s::uuid[])",
+                             (cand_pv, protected))
+            if to_delete:
+                conn.execute("DELETE FROM im.items WHERE item_id = ANY(%s::uuid[])", (to_delete,))
+            conn.execute(
+                """DELETE FROM im.extractions
+                   WHERE episode_id = %s AND model = %s AND prompt_version = %s AND privacy_policy_version = %s""",
+                (eid, model, ref_pv, policy))
+            conn.execute(
+                """INSERT INTO im.extractions (episode_id, model, prompt_version, privacy_policy_version,
+                     input_hash, egress_id, n_items) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (episode_id, model, prompt_version, privacy_policy_version) DO UPDATE
+                   SET input_hash = excluded.input_hash, egress_id = excluded.egress_id,
+                       n_items = excluded.n_items, created_at = now()""",
+                (eid, model, cand_pv, policy, sha, trial_egress_id, len(kept_by_id) + len(protected)))
+    if not dry_run:
+        stats["cards_after"] = conn.execute("SELECT count(*) FROM pub.cards").fetchone()[0]
+    return stats
+
+
 def version(model: str, effort: str, system: str, replicate: int = 1, schema: dict = extract.SCHEMA_V5,
             review_model: str | None = None, review_effort: str = extract.ExtractConfig.review_effort,
             review_system: str = extract.REVIEW_SYSTEM) -> str:
