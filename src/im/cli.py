@@ -970,8 +970,8 @@ def main(argv=None) -> None:
     tr.add_argument("--review-model",
                     help="optional Pass-2 merge/prune reviewer model, e.g. thinkingmachines/inkling-2-small")
     tr.add_argument("--review-effort", help="Pass-2 reviewer effort (default: [extract] review_effort)")
-    tr.add_argument("--review-prompt", choices=["v1", "v2"], default="v1",
-                    help="Pass-2 reviewer prompt in extract.REVIEW_PROMPTS (default: v1)")
+    tr.add_argument("--review-prompt", choices=["v1", "v2"], default="v2",
+                    help="Pass-2 reviewer prompt in extract.REVIEW_PROMPTS (default: v2)")
     tr.add_argument("--review-live", action="store_true",
                     help="run Pass-2 review directly over existing live captures for --model without re-running Pass 1")
     tr.add_argument("--episodes", nargs="+", metavar="UUID",
