@@ -57,7 +57,7 @@ REVIEW_SYSTEM_V1 = resources.files("im.prompts").joinpath("extract_review_v1.txt
 # personal plans/status/buying logistics, live activity/practice cues, and throwaway self-deprecation or pushback).
 REVIEW_SYSTEM_V2 = resources.files("im.prompts").joinpath("extract_review_v2.txt").read_text().rstrip("\n")
 REVIEW_PROMPTS = {"v1": REVIEW_SYSTEM_V1, "v2": REVIEW_SYSTEM_V2}
-REVIEW_SYSTEM = REVIEW_SYSTEM_V1   # live default until v2 is benchmarked
+REVIEW_SYSTEM = REVIEW_SYSTEM_V2   # live default (2026-11-27, benchmarked on 30 Opus episodes)
 
 # v5's schema lists the evidence first, the gist after it; what JSON Schema can't say (lines exist and are in order,
 # strings aren't empty) is checked in code (capture_checks).

@@ -352,18 +352,18 @@ def test_a_two_pass_trial_skips_empty_episodes_and_includes_review_cost(pipe, cf
     cli_out = json.loads(capsys.readouterr().out)
     assert cli_out["report"]["cost_usd"] == r["cost_usd"] and cli_out["report"]["recall"] == r["recall"]
 
-    # --review-prompt v2 hashes to a distinct version and sends REVIEW_SYSTEM_V2 to the Pass-2 reviewer
+    # --review-prompt v1 hashes to a distinct version and sends REVIEW_SYSTEM_V1 to the Pass-2 reviewer
     p2_calls.clear()
-    v2 = extract.REVIEW_PROMPTS["v2"]
-    assert trial.version(terra, "medium", v5, review_model=inkling, review_effort="medium", review_system=v2) != cand[0]
-    s2 = trial.run(pipe, llm.OpenRouter(post=p1_post), v5, model=terra,
+    v1 = extract.REVIEW_PROMPTS["v1"]
+    assert trial.version(terra, "medium", v5, review_model=inkling, review_effort="medium", review_system=v1) != cand[0]
+    s1 = trial.run(pipe, llm.OpenRouter(post=p1_post), v5, model=terra,
                    review_client=llm.OpenRouter(post=p2_post), review_model=inkling, review_effort="medium",
-                   review_system=v2)
-    assert s2["reviewed"] == 2 and all(c["messages"][0]["content"] == v2 for c in p2_calls)
-    cli.main(["trial", "v5.3", "--model", terra, "--review-model", inkling, "--review-prompt", "v2",
+                   review_system=v1)
+    assert s1["reviewed"] == 2 and all(c["messages"][0]["content"] == v1 for c in p2_calls)
+    cli.main(["trial", "v5.3", "--model", terra, "--review-model", inkling, "--review-prompt", "v1",
               "--live", "--report"])
-    cli_v2 = json.loads(capsys.readouterr().out)
-    assert cli_v2["report"]["episodes"] == r["episodes"]
+    cli_v1 = json.loads(capsys.readouterr().out)
+    assert cli_v1["report"]["episodes"] == r["episodes"]
 
 
 def test_review_live_reviews_existing_captures_without_pass1(pipe, cfg, stream, monkeypatch, capsys):
