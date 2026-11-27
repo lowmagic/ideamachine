@@ -7,7 +7,8 @@ from types import SimpleNamespace
 import psycopg
 import pytest
 
-from im import digest, extract, lattice
+from im import cli, digest, extract, lattice, llm
+from im.config import ModelConfig
 
 from helpers import HashEmbedder, run, table
 from test_extract import FakeClaude
@@ -114,3 +115,47 @@ def test_forgetting_takes_the_digest(seeded_lattice, cfg, stream):
     run(pipe, cfg, stream)
     assert table(pipe, "SELECT count(*) FROM im.digests") == [(0,)]
     assert table(pipe, "SELECT count(*) FROM im.digest_points") == [(0,)]
+
+
+def test_digest_compare_runs_a_candidate_model_without_overwriting_the_stored_digest(
+        seeded_lattice, monkeypatch, capsys, tmp_path):
+    pipe = seeded_lattice
+    digest.digest_stage(pipe, FakeDigester(), week=WEEK)
+    before_digests = table(pipe, "SELECT digest_id, summary, prompt_version FROM im.digests")
+    before_points = table(pipe, "SELECT digest_id, ord, kind, title, body, idea_ids FROM im.digest_points ORDER BY ord")
+
+    def post(body):
+        ans = {"summary": "Neon week summary.", "points": [
+            {"kind": "project", "title": "Build LoRa", "body": "Weekend project.", "ideas": [1]},
+            {"kind": "sleeper", "title": "Out of range", "body": "Cites nothing shown.", "ideas": [99]}]}
+        return {"id": "gen-1", "model": "google/gemini-4-neon-20261118",
+                "usage": {"prompt_tokens": 1200, "completion_tokens": 250, "cost": 0.004},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    neon_client = llm.OpenRouter(post=post)
+    r = digest.compare(pipe, neon_client, WEEK, ModelConfig("google/gemini-4-neon", "low"))
+    assert table(pipe, "SELECT digest_id, summary, prompt_version FROM im.digests") == before_digests
+    assert table(pipe, "SELECT digest_id, ord, kind, title, body, idea_ids FROM im.digest_points ORDER BY ord") \
+        == before_points
+    assert r["stored"]["summary"] == "A week about sensors and meetings." and r["stored"]["model"] == "claude-opus-5-5"
+    c = r["candidate"]
+    assert c["model"] == "google/gemini-4-neon" and c["served_by"] == "google/gemini-4-neon-20261118"
+    assert c["cost_usd"] == 0.004 and c["points_returned"] == 2 and c["points_valid"] == 1 and c["points_dropped"] == 1
+    assert table(pipe, "SELECT count(*) FROM im.egress_log WHERE prompt_version LIKE 'digest-compare:%%'") == [(1,)]
+
+    md = digest.format_compare(r)
+    assert "Stored digest" in md and "Candidate digest" in md and "Neon week summary." in md
+
+    capped = digest.compare(pipe, neon_client, WEEK, ModelConfig("google/gemini-4-neon", "low"), monthly_cap_usd=0)
+    assert capped["candidate"]["stopped"].startswith("monthly cap")
+
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+    monkeypatch.setattr(llm, "client_for", lambda model, zdr=False: neon_client)
+    out_dir = tmp_path / "digest-out"
+    cli.main(["digest", "--compare", "--model", "google/gemini-4-neon", "--out", str(out_dir)])
+    summary = json.loads(capsys.readouterr().out)
+    assert summary["weeks"][0]["candidate"]["points_valid"] == 1
+    assert (out_dir / f"{WEEK.isoformat()}.json").exists() and (out_dir / f"{WEEK.isoformat()}.md").exists()
+
+    with pytest.raises(SystemExit, match="never writes"):
+        cli.main(["digest", "--compare", "--write"])

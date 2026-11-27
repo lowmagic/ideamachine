@@ -198,3 +198,49 @@ def test_a_sheet_that_doesnt_fit_the_export_is_refused(change, error):
 def test_not_an_export():
     with pytest.raises(ValueError, match="not a ChatGPT export"):
         ao.parse("## Prompt:\n7/28/2026, 10:08:02 AM\n\nhello\n")
+
+
+def test_import_chatgpt_supports_review_model_and_openrouter_through_cli(pipe, tmp_path, monkeypatch, capsys):
+    from im import cli, llm
+
+    export_path, sheet_path = tmp_path / "export.md", tmp_path / "sheet.md"
+    export_path.write_text(EXPORT)
+    sheet_path.write_text(SHEET)
+    cfg_path = tmp_path / "im.toml"
+    cfg_path.write_text('[extract]\nmodel = "openai/gpt-6.1-terra"\n'
+                        'review_model = "thinkingmachines/inkling-2-small"\nreview_effort = "medium"\n')
+    monkeypatch.setenv("IM_CONFIG", str(cfg_path))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+
+    p1_calls, p2_calls = [], []
+
+    def fake_post(self, body):
+        content = body["messages"][1]["content"]
+        if body["model"] == "openai/gpt-6.1-terra":
+            p1_calls.append(body)
+            return {"id": f"p1-{len(p1_calls)}", "model": body["model"],
+                    "usage": {"prompt_tokens": 300, "completion_tokens": 50, "cost": 0.002},
+                    "choices": [{"finish_reason": "stop",
+                                 "message": {"content": json.dumps({"items": every_line(content)}), "refusal": None}}]}
+        p2_calls.append(body)
+        if len(p2_calls) == 2:   # session 2 has 2 items: drop item 1, keep item 2
+            kept = [{"ids": [2], "gist": "Michelle says the meeting is the coffee."}]
+            dropped = [{"id": 1, "reason": "fragment"}]
+        else:
+            kept = [{"ids": [1], "gist": "First message thought."}]
+            dropped = []
+        return {"id": f"p2-{len(p2_calls)}", "model": body["model"],
+                "usage": {"prompt_tokens": 200, "completion_tokens": 30, "cost": 0.001},
+                "choices": [{"finish_reason": "stop",
+                             "message": {"content": json.dumps({"kept": kept, "dropped": dropped}),
+                                         "refusal": None}}]}
+
+    monkeypatch.setattr(llm.OpenRouter, "_post", fake_post)
+    cli.main(["import-chatgpt", str(export_path), str(sheet_path), "--write"])
+    out = json.loads(capsys.readouterr().out)
+    assert (out["read"], out["items"], len(p1_calls), len(p2_calls)) == (3, 3, 3, 3)
+    assert out["cost_usd"] == pytest.approx(0.009)
+    assert table(pipe, "SELECT count(*), bool_and(segment_ids = '{}') FROM im.egress_log "
+                       "WHERE prompt_version LIKE '%%:review'") == [(3, True)]
+    assert_invariants(pipe)

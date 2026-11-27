@@ -214,3 +214,163 @@ def show(conn, week: date | None = None) -> str:
         out += ["", f"{p['point']}. [{p['kind']}] {p['title']}", p["body"],
                 *(f"   - {titles.get(i, i)}" for i in p["idea_ids"])]
     return "\n".join(out)
+
+
+def stored_weeks(conn, limit: int = 1) -> list[date]:
+    """The most recent weeks with a stored digest, newest first."""
+    return [w for (w,) in conn.execute("SELECT week_start FROM im.digests ORDER BY week_start DESC LIMIT %s", (limit,))]
+
+
+def stored(conn, week: date) -> dict | None:
+    """The stored digest for `week`, with its points, cited idea titles, and last logged request info."""
+    row = conn.execute(
+        "SELECT digest_id, summary, prompt_version, written_at FROM im.digests WHERE week_start = %s",
+        (week,)).fetchone()
+    if not row:
+        return None
+    digest_id, summary, pv, written_at = row
+    titles = dict(conn.execute("SELECT idea_id::text, title FROM im.idea_text"))
+    points = []
+    for ord_, kind, title, body, idea_ids in conn.execute(
+            """SELECT ord, kind, title, body, idea_ids FROM im.digest_points
+               WHERE digest_id = %s ORDER BY ord""", (digest_id,)):
+        ids = [str(i) for i in idea_ids]
+        points.append({"point": ord_, "kind": kind, "title": title, "body": body,
+                       "idea_ids": ids, "idea_titles": [titles.get(i, i) for i in ids]})
+    req = conn.execute(
+        """SELECT model, served_by, cost_usd::float, input_tokens, output_tokens
+           FROM im.egress_log WHERE prompt_version = %s AND error IS NULL AND payload LIKE %s
+           ORDER BY egress_id DESC LIMIT 1""", (pv, f"Week of {week:%Y-%m-%d} to %")).fetchone()
+    if req is None:
+        req = conn.execute(
+            """SELECT model, served_by, cost_usd::float, input_tokens, output_tokens
+               FROM im.egress_log WHERE prompt_version = %s AND error IS NULL
+               ORDER BY egress_id DESC LIMIT 1""", (pv,)).fetchone()
+    meta = {"model": req[0], "served_by": req[1], "cost_usd": req[2],
+            "input_tokens": req[3], "output_tokens": req[4]} if req else {}
+    return {"digest_id": digest_id, "prompt_version": pv,
+            "written_at": written_at.isoformat() if written_at else None,
+            **meta, "summary": summary, "points": points}
+
+
+def _validate_digest_answer(answer: dict) -> dict:
+    if not isinstance(answer, dict) or not isinstance(answer.get("summary"), str) \
+            or not isinstance(answer.get("points"), list):
+        raise ValueError("digest answer missing summary or points")
+    for p in answer["points"]:
+        if not isinstance(p, dict) or not isinstance(p.get("kind"), str) \
+                or not isinstance(p.get("title"), str) or not isinstance(p.get("body"), str) \
+                or not isinstance(p.get("ideas"), list):
+            raise ValueError("digest point missing kind, title, body, or ideas")
+    return answer
+
+
+def compare(conn, client, week: date, chat: ModelConfig = ModelConfig(), monthly_cap_usd: float = 20.0) -> dict:
+    """Run `chat` on `week`'s digest payload without writing im.digests, alongside any stored digest."""
+    start, end = _period(week)
+    unread = _unread(conn, start, end)
+    text, ids = payload(conn, week)
+    ref = stored(conn, week)
+    cand: dict = {
+        "model": chat.model, "effort": chat.effort, "served_by": None, "cost_usd": 0.0,
+        "input_tokens": None, "output_tokens": None, "refused": False, "failed": False,
+        "error": None, "stopped": None, "summary": None,
+        "points_returned": 0, "points_valid": 0, "points_dropped": 0, "points": [],
+    }
+    if not ids:
+        cand["skipped"] = "nothing said or added this week"
+        return {"week": week.isoformat(), "ideas_shown": 0, "unread": unread, "candidate": cand, "stored": ref}
+    pv = f"digest-compare:{prompt_version(chat)}"
+    try:
+        a = egress.ask(conn, client, chat.model, chat.effort, SYSTEM, SCHEMA, text, prompt_version=pv,
+                       segment_ids=egress.segments_of(conn, ids), monthly_cap_usd=monthly_cap_usd,
+                       max_tokens=chat.max_tokens, read=_validate_digest_answer)
+    except llm.Stop as e:
+        cand["stopped"] = str(e)[:200]
+        return {"week": week.isoformat(), "ideas_shown": len(ids), "unread": unread, "candidate": cand, "stored": ref}
+    cand["cost_usd"] = a.cost_usd
+    if a.reply:
+        cand["served_by"] = a.reply.served_by
+        cand["input_tokens"] = a.reply.input_tokens
+        cand["output_tokens"] = a.reply.output_tokens
+    cand["refused"] = a.refused
+    cand["failed"] = a.failed
+    cand["error"] = a.error
+    if a.data:
+        titles = dict(conn.execute("SELECT idea_id::text, title FROM im.idea_text"))
+        raw_points = a.data["points"]
+        valid = []
+        ord_ = 0
+        for p in raw_points:
+            cited = [ids[n - 1] for n in dict.fromkeys(p["ideas"])
+                     if isinstance(n, int) and not isinstance(n, bool) and 1 <= n <= len(ids)]
+            if not cited or p["kind"] not in KINDS:
+                continue
+            ord_ += 1
+            c_ids = [str(i) for i in cited]
+            valid.append({"point": ord_, "kind": p["kind"], "title": p["title"][:200], "body": p["body"][:2000],
+                          "idea_ids": c_ids, "idea_titles": [titles.get(i, i) for i in c_ids]})
+        cand.update(
+            summary=a.data["summary"][:2000],
+            points_returned=len(raw_points),
+            points_valid=len(valid),
+            points_dropped=len(raw_points) - len(valid),
+            points=valid,
+        )
+    return {"week": week.isoformat(), "ideas_shown": len(ids), "unread": unread, "candidate": cand, "stored": ref}
+
+
+def _format_side(label: str, d: dict | None) -> list[str]:
+    if not d:
+        return [f"## {label}", "", "(none stored for this week)", ""]
+    meta = [f"model: {d.get('model') or '?'}"]
+    if d.get("effort"):
+        meta.append(f"effort: {d['effort']}")
+    if d.get("served_by"):
+        meta.append(f"served_by: {d['served_by']}")
+    if d.get("cost_usd") is not None:
+        meta.append(f"cost: ${d['cost_usd']:.6f}")
+    if d.get("input_tokens") is not None or d.get("output_tokens") is not None:
+        meta.append(f"tokens: {d.get('input_tokens') or 0} in / {d.get('output_tokens') or 0} out")
+    lines = [f"## {label}", "", ", ".join(meta), ""]
+    if d.get("skipped"):
+        lines += [f"Skipped: {d['skipped']}", ""]
+    if d.get("stopped"):
+        lines += [f"Stopped: {d['stopped']}", ""]
+    if d.get("failed"):
+        lines += [f"Failed: {d['error']}", ""]
+    if d.get("refused"):
+        lines += ["Refused.", ""]
+    if d.get("summary"):
+        lines += [d["summary"], ""]
+    for p in d.get("points", []):
+        lines += [f"{p['point']}. [{p['kind']}] **{p['title']}**", p["body"],
+                  *(f"   - {t}" for t in p.get("idea_titles", [])), ""]
+    return lines
+
+
+def format_compare(result: dict) -> str:
+    """Render a side-by-side Markdown comparison of the stored digest and the candidate digest."""
+    c, s = result["candidate"], result["stored"]
+    s_cost = f"${s['cost_usd']:.6f}" if s and s.get("cost_usd") is not None else "-"
+    s_toks = f"{s.get('input_tokens') or 0} / {s.get('output_tokens') or 0}" if s else "-"
+    s_pts = f"{len(s['points'])} / 0" if s else "-"
+    c_toks = f"{c.get('input_tokens') or 0} / {c.get('output_tokens') or 0}"
+    c_pts = f"{c['points_valid']} / {c['points_dropped']}"
+    lines = [
+        f"# Digest comparison: week of {result['week']}",
+        "",
+        f"Ideas shown: {result['ideas_shown']}"
+        + (" (week still has unread/unmatched speech)" if result["unread"] else ""),
+        "",
+        "| Side | Model | Served by | Cost ($) | Tokens (in / out) | Points (valid / dropped) |",
+        "|---|---|---|---|---|---|",
+        f"| Stored | {(s or {}).get('model') or '-'} | {(s or {}).get('served_by') or '-'} | "
+        f"{s_cost} | {s_toks} | {s_pts} |",
+        f"| Candidate | {c['model']} ({c['effort']}) | {c.get('served_by') or '-'} | "
+        f"${c['cost_usd']:.6f} | {c_toks} | {c_pts} |",
+        "",
+        *_format_side("Stored digest", s),
+        *_format_side("Candidate digest", c),
+    ]
+    return "\n".join(lines)

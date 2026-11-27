@@ -102,8 +102,17 @@ chown root:root "$NAS_CONFIG"; chmod 700 "$NAS_CONFIG"
 # Backups hold everyone's words: root and the apps group only. setgid + group-writable so a member of the apps
 # group (the operator, over ssh) can drop the database from eeyore here.
 chown "root:$APPS_GID" "$NAS_BACKUPS"; chmod 2770 "$NAS_BACKUPS"
-# saved/: root and apps only (it quotes people). Group-writable, so `im audit-* sheet /saved/<new folder>` can make it.
-mkdir -p "$NAS_SAVED"; chown "root:$APPS_GID" "$NAS_SAVED"; chmod 770 "$NAS_SAVED"
+# saved/: root and apps only (it quotes people). Setgid + default POSIX ACL so anything written here by root, admin,
+# or the apps container inherits group apps with rwX and stays closed to other regardless of umask.
+mkdir -p "$NAS_SAVED"
+chown "root:$APPS_GID" "$NAS_SAVED"
+chmod 2770 "$NAS_SAVED"
+setfacl -d -m "u::rwx,g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" "$NAS_SAVED"
+find "$NAS_SAVED" -mindepth 1 -type d -exec chgrp "$APPS_GID" {} + -exec chmod 2770 {} + \
+    -exec setfacl -m "g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" {} + \
+    -exec setfacl -d -m "u::rwx,g::rwx,g:${APPS_GID}:rwx,m::rwx,o::---" {} +
+find "$NAS_SAVED" -mindepth 1 -type f -exec chgrp "$APPS_GID" {} + \
+    -exec setfacl -m "g::rwX,g:${APPS_GID}:rwX,m::rwX,o::---" {} +
 # access/: connection files for other programs on the NAS, run by a member of the apps group (admin), who can't
 # reach config/. Root and apps only.
 mkdir -p "$NAS_ACCESS"; chown "root:$APPS_GID" "$NAS_ACCESS"; chmod 750 "$NAS_ACCESS"
@@ -163,8 +172,8 @@ env_ensure "$NAS_DB_ENV" IM_WEB_PASSWORD "$(openssl rand -hex 24)"   # the web v
 env_ensure "$NAS_DB_ENV" IM_READER_PASSWORD "$(openssl rand -hex 24)"   # the read-only role, im_reader
 env_ensure "$NAS_PIPELINE_ENV" IM_DATABASE_URL \
     "postgresql://im_pipeline:$(env_get "$NAS_DB_ENV" IM_PIPELINE_PASSWORD)@db:5432/im"
-if [ -z "$(env_get "$NAS_PIPELINE_ENV" ANTHROPIC_API_KEY)" ]; then
-    # Manual: the key is in the operator's Anthropic console (or in eeyore's .env).
+if [ -z "$(env_get "$NAS_PIPELINE_ENV" ANTHROPIC_API_KEY)" ] && [ -z "$(env_get "$NAS_PIPELINE_ENV" OPENROUTER_API_KEY)" ]; then
+    # Manual: the key is in the operator's Anthropic console (or set OPENROUTER_API_KEY in pipeline.env).
     read -rsp "Anthropic API key for idea extraction (input hidden): " key; echo
     env_ensure "$NAS_PIPELINE_ENV" ANTHROPIC_API_KEY "$key"
 fi
@@ -200,6 +209,8 @@ if [ ! -f "$NAS_CONFIG/im/im.toml" ]; then
 # `im reread <stage>` sends it. Try a prompt first: im trial <prompt>.
 [extract]
 # prompt = "v5.3"
+# review_model = "thinkingmachines/inkling-2-small"
+# review_effort = "medium"
 
 [match]
 # model = "claude-opus-5-5"

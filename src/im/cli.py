@@ -95,8 +95,10 @@ def _extract(conn, cfg) -> dict:
         return {"stopped": f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}"}
     try:
         client = llm.client_for(x.model, cfg.egress.zdr)
+        review_client = llm.client_for(x.review_model, cfg.egress.zdr) if x.review_model else None
         return extract.run_stage(conn, client, x.model, x.effort, x.monthly_cap_usd, x.max_episodes_per_run,
-                                 extract.PROMPTS[x.prompt], x.max_tokens)
+                                 extract.PROMPTS[x.prompt], x.max_tokens, review_client=review_client,
+                                 review_model=x.review_model, review_effort=x.review_effort)
     except (anthropic.AnthropicError, SystemExit) as e:  # e.g. no credentials configured at all
         return {"stopped": f"Claude unavailable: {e}"}
 
@@ -178,7 +180,8 @@ def _digest(conn, cfg, week=None, again=False) -> dict:
 
 
 def cmd_digest(args) -> None:
-    """Print a weekly digest (the latest by default); --write writes it first, --again rewrites it."""
+    """Print a weekly digest (the latest by default); --write writes it first, --again rewrites it; --compare
+    runs a candidate model on completed week(s) without overwriting im.digests."""
     from datetime import date, timedelta
 
     from im import digest
@@ -186,6 +189,39 @@ def cmd_digest(args) -> None:
     week = date.fromisoformat(args.week) if args.week else None
     if week:
         week -= timedelta(days=week.weekday())   # its Monday
+    if args.compare:
+        if args.write or args.again:
+            raise SystemExit("--compare never writes im.digests; drop --write and --again")
+        if args.week and args.weeks:
+            raise SystemExit("give --week or --weeks, not both")
+        from im import llm
+
+        cfg = config.load()
+        cap = cfg.extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
+        chat = config.ModelConfig(model=args.model or cfg.digest.model,
+                                  effort=args.effort or cfg.digest.effort,
+                                  max_tokens=cfg.digest.max_tokens)
+        client = llm.client_for(chat.model, cfg.egress.zdr)
+        with db.connect(db.pipeline_dsn()) as conn:
+            weeks = [week] if week else (digest.stored_weeks(conn, args.weeks or 1) or [digest.last_week()])
+            results = [digest.compare(conn, client, w, chat, cap) for w in weeks]
+        if args.out:
+            out_dir = Path(args.out)
+            out_dir.mkdir(parents=True, exist_ok=True)
+            for r in results:
+                (out_dir / f"{r['week']}.json").write_text(json.dumps(r, indent=2, default=str))
+                (out_dir / f"{r['week']}.md").write_text(digest.format_compare(r))
+            _print({"out": str(out_dir), "weeks": [
+                {"week": r["week"], "ideas_shown": r["ideas_shown"],
+                 "stored_cost_usd": (r["stored"] or {}).get("cost_usd"),
+                 "stored_points": len((r["stored"] or {}).get("points", [])),
+                 "candidate": {k: r["candidate"].get(k) for k in (
+                     "model", "effort", "served_by", "cost_usd", "input_tokens", "output_tokens",
+                     "points_returned", "points_valid", "points_dropped", "refused", "failed", "error", "stopped")}}
+                for r in results]})
+        else:
+            print("\n\n---\n\n".join(digest.format_compare(r) for r in results))
+        return
     with db.connect(db.pipeline_dsn()) as conn:
         if args.write or args.again:
             week = week or digest.last_week()
@@ -246,8 +282,10 @@ def cmd_pending(args) -> None:
     cfg = config.load()
     with db.connect(db.pipeline_dsn()) as conn:
         prompt = args.prompt or cfg.extract.prompt
-        pv = extract.prompt_version(cfg.extract.model, cfg.extract.effort, extract.PROMPTS[prompt])
-        todo, held = extract._pending(conn, cfg.extract.model, pv)
+        x = cfg.extract
+        pv = extract.prompt_version(x.model, x.effort, extract.PROMPTS[prompt],
+                                    review_model=x.review_model, review_effort=x.review_effort)
+        todo, held = extract._pending(conn, x.model, pv)
         ids = [p.episode_id for p in todo]
         # Those read before under any version: their payload changed. What each one's latest read cost, a read
         # shared by reuse counted once.
@@ -275,7 +313,8 @@ def _held(conn, cfg, stage: str) -> dict | None:
 
     if stage == "extract":
         x = cfg.extract
-        pv = extract.prompt_version(x.model, x.effort, extract.PROMPTS[x.prompt])
+        pv = extract.prompt_version(x.model, x.effort, extract.PROMPTS[x.prompt],
+                                    review_model=x.review_model, review_effort=x.review_effort)
         return extract.held_report(conn, extract._pending(conn, x.model, pv)[1], x.model, pv)
     if stage == "sensitivity":
         return sensitivity.held(conn)
@@ -307,8 +346,11 @@ def _reread(conn, cfg, stage: str, limit: int | None) -> dict:
         x = cfg.extract
         if x.prompt not in extract.LIVE:
             raise SystemExit(f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}")
+        review_client = llm.client_for(x.review_model, cfg.egress.zdr) if x.review_model else None
         return extract.run_stage(conn, llm.client_for(x.model, cfg.egress.zdr), x.model, x.effort, cap, limit,
-                                 extract.PROMPTS[x.prompt], x.max_tokens, held_only=True)
+                                 extract.PROMPTS[x.prompt], x.max_tokens, held_only=True,
+                                 review_client=review_client, review_model=x.review_model,
+                                 review_effort=x.review_effort)
     if stage == "sensitivity":
         return sensitivity.tag_stage(conn, jev.Jev(), cap, limit, held_only=True)
     if stage == "connect":
@@ -327,6 +369,8 @@ def cmd_trial(args) -> None:
     x = cfg.extract
     system, schema = extract.PROMPTS[args.prompt], extract.SCHEMA_V5
     model, effort = args.model or x.model, args.effort or x.effort
+    review_model = args.review_model
+    review_effort = args.review_effort or x.review_effort
     ref_model, _, ref_effort = (args.against or f"{x.model}:{x.effort}").partition(":")
     ref_effort = ref_effort or x.effort
     cap = x.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
@@ -336,13 +380,25 @@ def cmd_trial(args) -> None:
         if args.exclude:
             exclude, sampleable = trial.held_out(conn, args.exclude)
             out["held_out"] = {"audit_episodes": len(exclude), "excluded_from_the_pool": sampleable}
-        candidate = (trial.version(model, effort, system, args.replicate, schema), model)
-        reference = (trial.version(ref_model, ref_effort, system, schema=schema), ref_model)
+        candidate = (trial.version(model, effort, system, args.replicate, schema,
+                                   review_model=review_model, review_effort=review_effort), model)
+        if args.live:
+            if x.prompt not in extract.LIVE:
+                raise SystemExit(f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}")
+            ref_review_model = None if args.against else x.review_model
+            reference = (extract.prompt_version(ref_model, ref_effort, extract.PROMPTS[x.prompt], schema,
+                                                review_model=ref_review_model, review_effort=x.review_effort),
+                         ref_model)
+        else:
+            reference = (trial.version(ref_model, ref_effort, system, schema=schema), ref_model)
         if not args.report:
             client = llm.client_for(model, cfg.egress.zdr)
+            review_client = llm.client_for(review_model, cfg.egress.zdr) if review_model else None
             out["trial"] = trial.run(conn, client, system, model, effort, cap, args.limit, args.sample,
-                                     args.replicate, schema, args.max_tokens or x.max_tokens, args.seed, exclude)
-        if candidate == reference:   # a new prompt on the configured model: nothing to compare with in the trials
+                                     args.replicate, schema, args.max_tokens or x.max_tokens, args.seed, exclude,
+                                     review_client=review_client, review_model=review_model,
+                                     review_effort=review_effort)
+        if not args.live and candidate == reference:   # a new prompt on the configured model: nothing to compare with in the trials
             out["report"] = ("the reference is this read itself; compare it with the live read: "
                              f"im audit-misses sheet FOLDER {args.prompt} --model {model} --live")
             _print(out)
@@ -350,9 +406,9 @@ def cmd_trial(args) -> None:
         same = None
         if args.same_point:
             judge = jev.Jev()
-            out["same_point"] = trial.same_point(conn, judge, candidate, reference, cap)
+            out["same_point"] = trial.same_point(conn, judge, candidate, reference, cap, live_reference=args.live)
             same = jev.kept(conn, jev.question_set(judge, "match"))
-        out["report"] = trial.report(conn, candidate, reference, same)
+        out["report"] = trial.report(conn, candidate, reference, same, live_reference=args.live)
     _print(out)
 
 
@@ -561,7 +617,7 @@ def cmd_audit_misses(args) -> None:
 
 
 def cmd_bench_match(args) -> None:
-    """B1: Opus's logged match decisions replayed through Jev, then scored against Opus."""
+    """B1: Opus's logged match decisions replayed through Jev or a chat model (--model), then scored against Opus."""
     from pathlib import Path
 
     from im import match_bench
@@ -570,11 +626,19 @@ def cmd_bench_match(args) -> None:
     if args.action == "score":
         _print(match_bench.score(folder))
         return
-    from im import jev
-
     cfg = config.load()
     cap = cfg.extract.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
     with db.connect(db.pipeline_dsn()) as conn:
+        if args.model and not args.model.startswith("jev"):
+            from im import llm
+
+            effort = args.effort or cfg.match.effort
+            max_tokens = args.max_tokens or cfg.match.max_tokens
+            _print(match_bench.run_model(conn, llm.client_for(args.model, cfg.egress.zdr), folder, args.model,
+                                         effort, args.limit, args.seed, cap, max_tokens))
+            return
+        from im import jev
+
         _print(match_bench.run(conn, jev.Jev(), folder, args.limit, cap))
 
 
@@ -618,11 +682,14 @@ def cmd_import_chatgpt(args) -> None:
     p = ao.plan(Path(args.export).read_text(), Path(args.sheet).read_text(), args.tz)
     with db.connect(db.pipeline_dsn()) as conn:
         if args.write:
-            import anthropic
+            from im import llm
 
             x = cfg.extract
-            _print(ao.import_sessions(conn, anthropic.Anthropic(), p, x.model, x.effort, x.monthly_cap_usd,
-                                      x.max_tokens))
+            client = llm.client_for(x.model, cfg.egress.zdr)
+            review_client = llm.client_for(x.review_model, cfg.egress.zdr) if x.review_model else None
+            _print(ao.import_sessions(conn, client, p, x.model, x.effort, x.monthly_cap_usd, x.max_tokens,
+                                      review_client=review_client, review_model=x.review_model,
+                                      review_effort=x.review_effort))
             return
         read = ao.already_read(conn, p)
     for k, session in enumerate(p["sessions"], 1):
@@ -861,6 +928,14 @@ def main(argv=None) -> None:
     dg.add_argument("--week", help="any date in the week (default: the latest digest, or last week with --write)")
     dg.add_argument("--write", action="store_true", help="write the week's digest if it isn't written (sends to Claude)")
     dg.add_argument("--again", action="store_true", help="rewrite the week's digest (sends to Claude)")
+    dg.add_argument("--compare", action="store_true",
+                    help="compare a candidate model on completed week(s) without overwriting im.digests")
+    dg.add_argument("--model", help="compare: candidate model, e.g. google/gemini-4-neon (default: [digest] model)")
+    dg.add_argument("--effort", help="compare: its effort (default: [digest] effort)")
+    dg.add_argument("--weeks", type=int, help="compare: how many latest stored digest weeks to compare (default 1)")
+    dg.add_argument("--out", help="compare: write <week>.json and <week>.md into this folder")
+    dg.add_argument("--monthly-cap-usd", type=float, help="compare: send nothing once the month's spend reaches this "
+                    "(default: config)")
     dg.set_defaults(func=cmd_digest)
     tr = sub.add_parser("trial", help="try an extraction model or prompt on a sample of episodes, against a reference "
                         "(sends the episodes to the models)")
@@ -870,6 +945,8 @@ def main(argv=None) -> None:
     tr.add_argument("--model", help="the candidate model: claude-sonnet-5-5, or through OpenRouter, e.g. "
                     "openai/gpt-6.1-sol (default: the configured one)")
     tr.add_argument("--against", help="the reference, model[:effort] (default: the configured model and effort)")
+    tr.add_argument("--live", action="store_true",
+                    help="compare against the live read (im.extractions and im.items) instead of a trial read")
     tr.add_argument("--sample", type=int, default=150, help="how many episodes I speak in, the same for every model")
     tr.add_argument("--seed", type=int, help="another order to draw the sample in (default: the trials' usual one)")
     tr.add_argument("--exclude", nargs="+", metavar="FOLDER", help="leave out every episode a capture on these "
@@ -878,6 +955,9 @@ def main(argv=None) -> None:
                     help="a further independent read by the same model (2, 3...): the reference against its own "
                          "replicate is the ceiling for every candidate's recall")
     tr.add_argument("--effort", help="the candidate's effort (default: the configured one)")
+    tr.add_argument("--review-model",
+                    help="optional Pass-2 merge/prune reviewer model, e.g. thinkingmachines/inkling-2-small")
+    tr.add_argument("--review-effort", help="Pass-2 reviewer effort (default: [extract] review_effort)")
     tr.add_argument("--max-tokens", type=int, help="each request's output budget, reasoning included; not part of "
                     "the trial's version, so a failed read can be retried with more (default: [extract] max_tokens, "
                     "else 32000)")
@@ -1008,11 +1088,15 @@ def main(argv=None) -> None:
     hs.add_argument("--controls", type=int, default=0, help="also this many episodes from the trials' random sample")
     hs.add_argument("--seed", type=int, default=1, help="the shuffle's seed")
     hs.set_defaults(func=cmd_hard_set)
-    bm = sub.add_parser("bench-match", help="B1: replay Opus's logged match decisions through Jev (sends to Jev), "
-                        "then score its agreement with Opus")
+    bm = sub.add_parser("bench-match", help="B1: replay Opus's logged match decisions through Jev or a chat model "
+                        "(--model), then score agreement with Opus")
     bm.add_argument("action", choices=["run", "score"])
-    bm.add_argument("folder", help="where Jev's answers go (it quotes people: keep it in saved/), e.g. /saved/b1-1")
-    bm.add_argument("--limit", type=int, help="run: only the first N decisions")
+    bm.add_argument("folder", help="where answers go (it quotes people: keep it in saved/), e.g. /saved/b1-1")
+    bm.add_argument("--model", help="run: chat model to replay matcher v2 through, e.g. google/gemini-4-neon (omit for Jev)")
+    bm.add_argument("--effort", help="run (--model): reasoning effort (default: [match] effort)")
+    bm.add_argument("--limit", type=int, help="run: only the first N decisions (with --model: stratified sample)")
+    bm.add_argument("--seed", type=int, default=1, help="run (--model): seed for stratified sampling with --limit")
+    bm.add_argument("--max-tokens", type=int, help="run (--model): output budget (default: [match] max_tokens, else 4000)")
     bm.add_argument("--monthly-cap-usd", type=float, help="run: send nothing once the month's spend reaches this "
                     "(default: config)")
     bm.set_defaults(func=cmd_bench_match)

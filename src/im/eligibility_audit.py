@@ -129,7 +129,8 @@ def live_read(x) -> tuple[str, str]:
     """The read `im run` makes, (prompt_version, model), under the configured live prompt, model and effort."""
     if x.prompt not in extract.LIVE:
         raise SystemExit(f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}")
-    return extract.prompt_version(x.model, x.effort, extract.PROMPTS[x.prompt]), x.model
+    return extract.prompt_version(x.model, x.effort, extract.PROMPTS[x.prompt],
+                                  review_model=x.review_model, review_effort=x.review_effort), x.model
 
 
 def captures(conn, read: tuple[str, str]) -> tuple[list[dict], int]:

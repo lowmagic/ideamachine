@@ -22,6 +22,7 @@ uv run im reread extract --limit 20   # approve held re-reads: 20 episodes read 
 uv run im ideas                   # what Claude captured; --review to keep or discard each item
 uv run im ideas --discards        # what I discarded and why: material for revising the extraction prompt
 uv run im trial v5.3 --model openai/gpt-6.1-sol   # B3: a model on the trial sample, vs Opus
+uv run im trial v5.3 --model openai/gpt-6.1-terra --review-model thinkingmachines/inkling-2-small --live --sample 30 --same-point   # two-pass extraction vs live read
 uv run im trial v5.3 --model claude-opus-5-5 --replicate 2   # Opus against itself: the ceiling for recall
 uv run im trial v5 --replicate 2   # extraction v5 (decision 0012) on the trial sample, read twice; the report counts the capture checks each read fails
 uv run im trial v5 --model openai/gpt-6.1-sol --report --same-point   # also count a thought the two quoted from different lines, where Jev says they make the same point (sends only those pairs, to Jev; kept)
@@ -44,6 +45,8 @@ uv run im audit-lens review saved/lens-round-2 --lenses ai,social   # while rewo
 uv run im audit-lens sheet saved/lens-final --lenses a,b --half held --exclude saved/lens-pilot-1 --members 20   # the blind sheet judging those lenses (M5 design): per lens --members of its members (default 10), 10 cards only the embedding baseline has, 10 near misses, shuffled, unlabeled, from the held half and none an earlier sheet showed; mark each in, out or ?; sends nothing
 uv run im audit-lens score saved/lens-pilot-1   # once marked: per lens, precision among members (Wilson 95%), the baseline's weighted precision, the two where they disagree, near misses put in
 uv run im bench-match run saved/b1-1 --limit 20   # B1: Opus's logged match decisions, replayed through Jev; `score` compares
+uv run im bench-match run saved/b1-neon --model google/gemini-4-neon --limit 60   # replay matcher v2 through a chat model (stratified sample); `score` compares
+uv run im digest --compare --model google/gemini-4-neon --weeks 2 --out saved/digest-neon   # dry-run weekly digest comparison without writing im.digests
 uv run im audit-tension draft saved/tension-2 --model jev-1.14.0   # Jev drafts a probe sheet (via OpenRouter); --probes asks more
                                   # (OpenRouter models need OPENROUTER_API_KEY)
 uv run im import-chatgpt saved/chatgpt-idea-machine.md saved/chatgpt-curate-sheet.md   # what the ChatGPT Idea Machine's kept messages would send, a session at a time; --write reads them with extraction v5.3 into archive captures, once
@@ -102,7 +105,7 @@ Every stage that asks a chat model takes its model and effort from the file:
 
 | Section | Stage | `model` | `effort` |
 |---|---|---|---|
-| `[extract]` | extraction (also `prompt`, default and only live one `v5.3`; `monthly_cap_usd`, `max_episodes_per_run`) | `claude-opus-5-5` | `medium` |
+| `[extract]` | extraction (also `prompt`, default and only live one `v5.3`; optional `review_model` & `review_effort`; `monthly_cap_usd`, `max_episodes_per_run`) | `claude-opus-5-5` | `medium` |
 | `[match]` | the lattice's matcher | `claude-opus-5-5` | `low` |
 | `[digest]` | the weekly digest | `claude-opus-5-5` | `low` |
 | `[connect]` | the connection judge (each `im run`, and `im connect`; also `max_pairs_per_run`) | `openai/gpt-6.1-terra` | `low` |
