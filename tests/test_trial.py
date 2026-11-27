@@ -440,8 +440,12 @@ def test_apply_review_updates_live_items_and_protects_curated_cards(pipe, cfg, s
     def p2_post(body):
         content = body["messages"][1]["content"]
         if "lockfile" in content:
-            ans = {"kept": [{"ids": [1], "gist": "Updated: pin cache key to lockfile hash."}],
-                   "dropped": [{"id": 2, "reason": "small talk"}]}
+            # live_reads orders items by item_id, so look up which candidate number is the lockfile capture.
+            cands = content.split("Candidate captures:\n", 1)[1].splitlines()
+            lock_id = next(int(line.split(".", 1)[0]) for line in cands if ". Gist:" in line and "lockfile" in line)
+            drop_id = 3 - lock_id
+            ans = {"kept": [{"ids": [lock_id], "gist": "Updated: pin cache key to lockfile hash."}],
+                   "dropped": [{"id": drop_id, "reason": "small talk"}]}
         else:
             ans = {"kept": [], "dropped": [{"id": 1, "reason": "test drop of starred card"}]}
         return {"id": "rl", "model": "thinkingmachines/inkling-2-small",
