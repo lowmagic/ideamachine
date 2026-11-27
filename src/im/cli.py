@@ -369,10 +369,14 @@ def cmd_trial(args) -> None:
     x = cfg.extract
     system, schema = extract.PROMPTS[args.prompt], extract.SCHEMA_V5
     model, effort = args.model or x.model, args.effort or x.effort
-    review_model = args.review_model
+    review_model = args.review_model or (x.review_model if args.review_live else None)
     review_effort = args.review_effort or x.review_effort
-    ref_model, _, ref_effort = (args.against or f"{x.model}:{x.effort}").partition(":")
-    ref_effort = ref_effort or x.effort
+    review_system = extract.REVIEW_PROMPTS[args.review_prompt]
+    if args.review_live and not review_model:
+        raise SystemExit("--review-live requires --review-model (or [extract] review_model in im.toml)")
+    live_ref = args.live or args.review_live
+    ref_model, _, ref_effort = (args.against or (f"{model}:{effort}" if args.review_live else f"{x.model}:{x.effort}")).partition(":")
+    ref_effort = ref_effort or (effort if args.review_live else x.effort)
     cap = x.monthly_cap_usd if args.monthly_cap_usd is None else args.monthly_cap_usd
     with db.connect(db.pipeline_dsn()) as conn:
         out = {}
@@ -381,24 +385,32 @@ def cmd_trial(args) -> None:
             exclude, sampleable = trial.held_out(conn, args.exclude)
             out["held_out"] = {"audit_episodes": len(exclude), "excluded_from_the_pool": sampleable}
         candidate = (trial.version(model, effort, system, args.replicate, schema,
-                                   review_model=review_model, review_effort=review_effort), model)
-        if args.live:
-            if x.prompt not in extract.LIVE:
+                                   review_model=review_model, review_effort=review_effort,
+                                   review_system=review_system), model)
+        if live_ref:
+            if not args.review_live and x.prompt not in extract.LIVE:
                 raise SystemExit(f"extract.prompt {x.prompt} isn't live; `im run` reads with {', '.join(extract.LIVE)}")
-            ref_review_model = None if args.against else x.review_model
-            reference = (extract.prompt_version(ref_model, ref_effort, extract.PROMPTS[x.prompt], schema,
+            ref_review_model = None if (args.against or args.review_live) else x.review_model
+            ref_system = system if args.review_live else extract.PROMPTS[x.prompt]
+            reference = (extract.prompt_version(ref_model, ref_effort, ref_system, schema,
                                                 review_model=ref_review_model, review_effort=x.review_effort),
                          ref_model)
         else:
             reference = (trial.version(ref_model, ref_effort, system, schema=schema), ref_model)
         if not args.report:
-            client = llm.client_for(model, cfg.egress.zdr)
             review_client = llm.client_for(review_model, cfg.egress.zdr) if review_model else None
-            out["trial"] = trial.run(conn, client, system, model, effort, cap, args.limit, args.sample,
-                                     args.replicate, schema, args.max_tokens or x.max_tokens, args.seed, exclude,
-                                     review_client=review_client, review_model=review_model,
-                                     review_effort=review_effort)
-        if not args.live and candidate == reference:   # a new prompt on the configured model: nothing to compare with in the trials
+            if args.review_live:
+                out["trial"] = trial.review_live(
+                    conn, review_client, system, model, effort, review_model, review_effort, review_system,
+                    cap, args.limit, args.sample, args.replicate, schema, args.max_tokens or x.max_tokens,
+                    args.seed, exclude, episodes=args.episodes)
+            else:
+                client = llm.client_for(model, cfg.egress.zdr)
+                out["trial"] = trial.run(conn, client, system, model, effort, cap, args.limit, args.sample,
+                                         args.replicate, schema, args.max_tokens or x.max_tokens, args.seed, exclude,
+                                         review_client=review_client, review_model=review_model,
+                                         review_effort=review_effort, review_system=review_system)
+        if not live_ref and candidate == reference:   # a new prompt on the configured model: nothing to compare with in the trials
             out["report"] = ("the reference is this read itself; compare it with the live read: "
                              f"im audit-misses sheet FOLDER {args.prompt} --model {model} --live")
             _print(out)
@@ -406,9 +418,9 @@ def cmd_trial(args) -> None:
         same = None
         if args.same_point:
             judge = jev.Jev()
-            out["same_point"] = trial.same_point(conn, judge, candidate, reference, cap, live_reference=args.live)
+            out["same_point"] = trial.same_point(conn, judge, candidate, reference, cap, live_reference=live_ref)
             same = jev.kept(conn, jev.question_set(judge, "match"))
-        out["report"] = trial.report(conn, candidate, reference, same, live_reference=args.live)
+        out["report"] = trial.report(conn, candidate, reference, same, live_reference=live_ref)
     _print(out)
 
 
@@ -958,6 +970,12 @@ def main(argv=None) -> None:
     tr.add_argument("--review-model",
                     help="optional Pass-2 merge/prune reviewer model, e.g. thinkingmachines/inkling-2-small")
     tr.add_argument("--review-effort", help="Pass-2 reviewer effort (default: [extract] review_effort)")
+    tr.add_argument("--review-prompt", choices=["v1", "v2"], default="v1",
+                    help="Pass-2 reviewer prompt in extract.REVIEW_PROMPTS (default: v1)")
+    tr.add_argument("--review-live", action="store_true",
+                    help="run Pass-2 review directly over existing live captures for --model without re-running Pass 1")
+    tr.add_argument("--episodes", nargs="+", metavar="UUID",
+                    help="specific episode UUID(s) to review with --review-live instead of the random sample")
     tr.add_argument("--max-tokens", type=int, help="each request's output budget, reasoning included; not part of "
                     "the trial's version, so a failed read can be retried with more (default: [extract] max_tokens, "
                     "else 32000)")

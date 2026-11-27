@@ -52,7 +52,12 @@ SYSTEM_V5_4 = resources.files("im.prompts").joinpath("extract_v5_4.txt").read_te
 # Every prompt here captures only my speech (decision 0011), so an episode where I don't speak isn't sent (_pending).
 PROMPTS = {"v5": SYSTEM_V5, "v5.1": SYSTEM_V5_1, "v5.2": SYSTEM_V5_2, "v5.3": SYSTEM_V5_3, "v5.4": SYSTEM_V5_4}
 LIVE = ("v5.3",)   # what `im run` may read with; v5 to v5.2 and v5.4 are for `im trial` only
-REVIEW_SYSTEM = resources.files("im.prompts").joinpath("extract_review_v1.txt").read_text().rstrip("\n")
+REVIEW_SYSTEM_V1 = resources.files("im.prompts").joinpath("extract_review_v1.txt").read_text().rstrip("\n")
+# review v2 (trial, 2026-11-27): tightens against offhand lines said in passing (factual questions, casual hearsay,
+# personal plans/status/buying logistics, live activity/practice cues, and throwaway self-deprecation or pushback).
+REVIEW_SYSTEM_V2 = resources.files("im.prompts").joinpath("extract_review_v2.txt").read_text().rstrip("\n")
+REVIEW_PROMPTS = {"v1": REVIEW_SYSTEM_V1, "v2": REVIEW_SYSTEM_V2}
+REVIEW_SYSTEM = REVIEW_SYSTEM_V1   # live default until v2 is benchmarked
 
 # v5's schema lists the evidence first, the gist after it; what JSON Schema can't say (lines exist and are in order,
 # strings aren't empty) is checked in code (capture_checks).

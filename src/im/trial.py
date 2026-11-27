@@ -29,6 +29,7 @@ above as found, best first, each capture once.
 import hashlib
 import json
 import re
+import uuid
 from pathlib import Path
 
 from im import egress, extract, jev, llm
@@ -71,13 +72,14 @@ def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str =
         monthly_cap_usd: float = 20.0, limit: int | None = None, n: int = SAMPLE,
         replicate: int = 1, schema: dict = extract.SCHEMA_V5, max_tokens: int | None = None,
         seed: int | None = None, exclude=(), review_client=None, review_model: str | None = None,
-        review_effort: str = extract.ExtractConfig.review_effort) -> dict:
+        review_effort: str = extract.ExtractConfig.review_effort,
+        review_system: str = extract.REVIEW_SYSTEM) -> dict:
     """Send the sampled episodes this model hasn't read yet under this prompt and policy (or whose payload changed).
     `max_tokens`, each request's output budget, isn't part of the trial's version; nor are `seed` and `exclude` (the
     sample's order and held-out episodes: see sample)."""
     if review_model and review_client is None:
         raise ValueError("review_client is required when review_model is set")
-    pv = version(model, effort, system, replicate, schema, review_model, review_effort)
+    pv = version(model, effort, system, replicate, schema, review_model, review_effort, review_system)
     policy = egress.POLICY_VERSION
     done = {r[0]: r[1] for r in conn.execute(
         """SELECT episode_id, payload_sha256 FROM im.prompt_trials
@@ -106,7 +108,7 @@ def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str =
             try:
                 r, reviewed, merges, drops = extract._review(
                     conn, review_client, p, items, pv, review_model, review_effort, monthly_cap_usd,
-                    max_tokens=max_tokens, episode_id=p.episode_id)
+                    max_tokens=max_tokens, episode_id=p.episode_id, system=review_system)
             except llm.Stop as e:
                 stats["stopped"] = str(e)[:200]
                 break
@@ -132,10 +134,81 @@ def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str =
     return stats
 
 
+def review_live(conn, review_client, system: str, model: str, effort: str,
+                review_model: str, review_effort: str = extract.ExtractConfig.review_effort,
+                review_system: str = extract.REVIEW_SYSTEM, monthly_cap_usd: float = 20.0,
+                limit: int | None = None, n: int = SAMPLE, replicate: int = 1,
+                schema: dict = extract.SCHEMA_V5, max_tokens: int | None = None,
+                seed: int | None = None, exclude=(), episodes=None) -> dict:
+    """Run Pass-2 review directly over existing live captures (im.items) for (model, effort, system), without
+    re-running Pass 1. Files the reviewed captures in im.prompt_trials (never touching im.items) and returns
+    per-episode drops and merges."""
+    if not review_model or review_client is None:
+        raise ValueError("review_model and review_client are required for review_live")
+    ref_pv = extract.prompt_version(model, effort, system, schema)
+    pv = version(model, effort, system, replicate, schema, review_model, review_effort, review_system)
+    policy = egress.POLICY_VERSION
+    live = live_reads(conn, ref_pv, model)
+    if episodes:
+        pool = [eid for eid in (uuid.UUID(str(e)) for e in episodes) if eid in live and live[eid][1]]
+    else:
+        pool = [eid for eid in sample(conn, n, seed, exclude) if eid in live and live[eid][1]]
+    done = {r[0]: r[1] for r in conn.execute(
+        """SELECT episode_id, payload_sha256 FROM im.prompt_trials
+           WHERE prompt_version = %s AND model = %s AND privacy_policy_version = %s""", (pv, model, policy))}
+    todo = []
+    for eid in pool:
+        sha, items, _ = live[eid]
+        if done.get(eid) == sha:
+            continue
+        p = egress.build(conn, eid)
+        if p.sha256 == sha:
+            todo.append((p, items))
+    stats: dict = {"model": model, "review_model": review_model, "prompt_version": pv, "pending": len(todo),
+                   "reviewed": 0, "failed": 0, "items_before": 0, "items_after": 0,
+                   "review_merges": 0, "review_drops": 0, "cost_usd": 0.0, "stopped": None, "changes": []}
+    for p, items in todo[:limit] if limit else todo:
+        try:
+            r, reviewed, merges, drops = extract._review(
+                conn, review_client, p, items, pv, review_model, review_effort, monthly_cap_usd,
+                max_tokens=max_tokens, episode_id=p.episode_id, system=review_system)
+        except llm.Stop as e:
+            stats["stopped"] = str(e)[:200]
+            break
+        stats["cost_usd"] += r.cost_usd
+        if reviewed is None:
+            stats["failed"] += 1
+            continue
+        rows = [{k: it[k] for k in KEEP if k in it} | {"source_segment_ids": [str(s) for s in it["source_segment_ids"]]}
+                for it in reviewed]
+        conn.execute(
+            """INSERT INTO im.prompt_trials (episode_id, prompt_version, model, privacy_policy_version, payload_sha256,
+                 egress_id, items) VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (episode_id, prompt_version, model, privacy_policy_version) DO UPDATE
+               SET payload_sha256 = excluded.payload_sha256, egress_id = excluded.egress_id, items = excluded.items,
+                   created_at = now()""",
+            (p.episode_id, pv, model, policy, p.sha256, r.egress_id, json.dumps(rows)))
+        stats["reviewed"] += 1
+        stats["items_before"] += len(items)
+        stats["items_after"] += len(reviewed)
+        stats["review_merges"] += merges
+        stats["review_drops"] += drops
+        if merges or drops:
+            dropped = [{"gist": items[d["id"] - 1]["gist"], "quote": items[d["id"] - 1]["quote"],
+                        "reason": d["reason"]} for d in r.data["dropped"]]
+            merged = [{"from": [items[i - 1]["gist"] for i in e["ids"]], "to": e["gist"]}
+                      for e in r.data["kept"] if len(e["ids"]) > 1]
+            stats["changes"].append({"episode_id": str(p.episode_id), "before": len(items), "after": len(reviewed),
+                                     "dropped": dropped, "merged": merged})
+    stats["cost_usd"] = round(stats["cost_usd"], 4)
+    return stats
+
+
 def version(model: str, effort: str, system: str, replicate: int = 1, schema: dict = extract.SCHEMA_V5,
-            review_model: str | None = None, review_effort: str = extract.ExtractConfig.review_effort) -> str:
+            review_model: str | None = None, review_effort: str = extract.ExtractConfig.review_effort,
+            review_system: str = extract.REVIEW_SYSTEM) -> str:
     """The prompt version a trial is filed under; a replicate's is marked `~n`."""
-    pv = extract.prompt_version(model, effort, system, schema, review_model, review_effort)
+    pv = extract.prompt_version(model, effort, system, schema, review_model, review_effort, review_system)
     return pv if replicate == 1 else f"{pv}~{replicate}"
 
 
@@ -147,6 +220,7 @@ def _reads(conn, pv: str, model: str) -> dict:
                     SELECT r.cost_usd FROM im.egress_log r
                     WHERE r.episode_id = t.episode_id AND r.prompt_version = t.prompt_version || ':review'
                       AND r.privacy_policy_version = t.privacy_policy_version AND r.error IS NULL
+                      AND r.egress_id <> t.egress_id
                     ORDER BY r.egress_id DESC LIMIT 1), 0)
            FROM im.prompt_trials t JOIN im.egress_log g USING (egress_id)
            WHERE t.prompt_version = %s AND t.model = %s AND t.privacy_policy_version = %s""",

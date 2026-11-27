@@ -253,18 +253,21 @@ function draw(now) {
     S[j].dx = x * far; S[j].dy = y * far;
   }
   // In a constellation or lens, every link inside the group stays drawn so clicking from star to star keeps the
-  // constellation's web intact, while the picked star's own reach shines brighter on top of it.
+  // constellation's web intact, while the picked star's own reach shines brighter on top of it. Constellations use
+  // the same hop alpha and thickness drop-off as the normal sky (with a faint base web so distant edges don't vanish).
+  const isCon = focus && focus.kind === "constellation";
   for (const [i, j] of D.links) {
     const a = S[i], b = S[j];
     if (a.first > cut || b.first > cut || !inSlice(a) || !inSlice(b)) continue;
     if (group && (!group.has(i) || !group.has(j))) continue;
     const da = near ? near.depth.get(i) : undefined, db = near ? near.depth.get(j) : undefined;
     const d = da === undefined || db === undefined ? HOPS : Math.min(da, db);
-    const base = group ? Math.max(.18, Math.round(45 * Math.min(a.rel, b.rel)) / 100) : near ? 0 : .12;
+    const base = isCon ? (near ? .08 : .12)
+      : group ? Math.max(.18, Math.round(45 * Math.min(a.rel, b.rel)) / 100) : near ? 0 : .12;
     const part = d < HOPS ? Math.max(0, Math.min(drawn - d, 1)) : 0;
     const alpha = part > 0 ? Math.max(REACHED[d], base) : base;
     if (alpha < .02) continue;
-    g.lineWidth = part > 0 && d === 0 ? 1.6 : group ? 1.15 : 1;
+    g.lineWidth = part > 0 && d === 0 ? 1.6 : group && !isCon ? 1.15 : 1;
     g.strokeStyle = LINK[alpha] || (LINK[alpha] = `rgba(${alpha > .5 ? "200, 212, 255" : "150, 165, 220"}, ${alpha})`);
     const [from, to] = db < da ? [b, a] : [a, b], fx = sx(from), fy = sy(from), whole = part > 0 && base < .02 ? part : 1;
     g.beginPath(); g.moveTo(fx, fy); g.lineTo(fx + (sx(to) - fx) * whole, fy + (sy(to) - fy) * whole); g.stroke();
