@@ -413,3 +413,158 @@ def test_an_error_every_request_would_get_stops_extraction_after_the_first(pipe,
     stats = extract.run_stage(pipe, claude)
     assert len(claude.calls) == 1 and stats["stopped"] and stats["failed"] == 0
     assert table(pipe, "SELECT count(*), count(error) FROM im.egress_log") == [(1, 1)]   # it went, so it's logged
+
+
+def test_review_pass_merges_drops_logs_and_preserves_verbatim(pipe, cfg, stream):
+    from im import llm
+
+    run(pipe, cfg, stream)
+
+    def pass1(text):
+        if "LoRa" not in text:
+            return []
+        return [
+            {"lines": [1], "quote": "the garden sensors could report soil moisture", "attributed_to": "a field guide",
+             "reading": "The field sensors report soil moisture.",
+             "mishearings": [{"heard": "the", "meant": "The"}, {"heard": "garden", "meant": "field"}],
+             "gist": "Field sensors could report soil moisture."},
+            {"lines": [2], "quote": "Battery life is the hard part, maybe a solar trickle charger.",
+             "attributed_to": "", "reading": "The battery needs a PV trickle charger.",
+             "mishearings": [{"heard": "the", "meant": "The"}, {"heard": "solar", "meant": "PV"}],
+             "gist": "Battery life probably needs a PV trickle charger."},
+            {"lines": [4], "quote": "Write that down for the weekend.", "attributed_to": "",
+             "reading": "Write that down for the weekend.", "mishearings": [], "gist": "Write that down."},
+        ]
+
+    review_calls = []
+
+    def review_post(body):
+        review_calls.append(body)
+        ans = {"kept": [{"ids": [2, 1], "gist": "Soil moisture sensors need a solar trickle charger."}],
+               "dropped": [{"id": 3, "reason": "reminder"}]}
+        return {"id": "rev-1", "model": "thinkingmachines/inkling-2-small",
+                "usage": {"prompt_tokens": 600, "completion_tokens": 80, "cost": 0.0015},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    claude = FakeClaude(pass1)
+    reviewer = llm.OpenRouter(post=review_post)
+    stats = extract.run_stage(pipe, claude, review_client=reviewer,
+                              review_model="thinkingmachines/inkling-2-small", review_effort="medium")
+    pass1_cost = 8 * (1000 * 4 + 200 * 20) / 1e6
+    assert (stats["read"], stats["items"], stats["reviewed"], stats["review_merges"], stats["review_drops"]) == \
+        (8, 1, 1, 1, 1)
+    assert stats["review_model"] == "thinkingmachines/inkling-2-small"
+    assert stats["cost_usd"] == pytest.approx(round(pass1_cost + 0.0015, 4))
+    assert len(claude.calls) == 8 and len(review_calls) == 1   # empty Pass-1 episodes skipped
+    assert "Bob" not in json.dumps(review_calls)
+
+    (eid, quote, gist, reading, attr, mis, segs, said_by, checks), = table(
+        pipe, """SELECT i.episode_id, i.quote, i.gist, i.reading, i.attributed_to, i.mishearings,
+                        i.source_segment_ids, w.said_by, i.checks
+                 FROM im.items i JOIN im.item_said_by w USING (item_id)""")
+    expected_segs = [s for (s,) in table(
+        pipe, "SELECT segment_id FROM im.episode_segments WHERE episode_id = %s ORDER BY ord LIMIT 2", eid)]
+    assert quote == "Battery life is the hard part, maybe a solar trickle charger."
+    assert gist == "Soil moisture sensors need a solar trickle charger."
+    assert reading == "The field sensors report soil moisture. The battery needs a PV trickle charger."
+    assert attr == "a field guide" and said_by == "me" and checks == []
+    assert mis == [{"heard": "the", "meant": "The"}, {"heard": "garden", "meant": "field"},
+                   {"heard": "solar", "meant": "PV"}]
+    assert segs == expected_segs   # sorted in episode order even when ids were [2, 1]
+
+    assert table(pipe, "SELECT prompt_version, count(*) FROM im.egress_log GROUP BY 1 ORDER BY 1") == sorted([
+        (stats["prompt_version"], 8), (f"{stats['prompt_version']}:review", 1)])
+    again = extract.run_stage(pipe, claude, review_client=reviewer,
+                              review_model="thinkingmachines/inkling-2-small", review_effort="medium")
+    assert again["read"] == 0 and len(claude.calls) == 8 and len(review_calls) == 1
+    assert_invariants(pipe)
+
+
+def test_review_pass_failure_and_stop_leave_episode_unread(pipe, cfg, stream):
+    from im import llm
+
+    run(pipe, cfg, stream)
+
+    def pass1(text):
+        if "LoRa" not in text:
+            return []
+        return [{"lines": [1], "quote": "Idea: the garden sensors could report soil moisture over LoRa.",
+                 "attributed_to": "", "reading": "Garden sensors could report soil moisture over LoRa.",
+                 "mishearings": [], "gist": "Garden sensors could use LoRa."}]
+
+    def post_from(ans_or_err):
+        def post(_body):
+            if "error" in ans_or_err:
+                return ans_or_err
+            return {"id": "rev-x", "model": "thinkingmachines/inkling-2-small",
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 40, "cost": 0.001},
+                    "choices": [{"finish_reason": "stop",
+                                 "message": {"content": json.dumps(ans_or_err), "refusal": None}}]}
+        return llm.OpenRouter(post=post)
+
+    bad = post_from({"kept": [{"ids": [1, 1], "gist": "duplicate candidate id"}], "dropped": []})
+    s1 = extract.run_stage(pipe, FakeClaude(pass1), review_client=bad, review_model="thinkingmachines/inkling-2-small")
+    assert (s1["read"], s1["failed"]) == (7, 1)
+    assert table(pipe, "SELECT count(*) FROM im.extractions") == [(7,)]
+    assert table(pipe, "SELECT count(*) FROM im.egress_log WHERE prompt_version = %s AND error IS NOT NULL",
+                 f"{s1['prompt_version']}:review") == [(1,)]
+
+    stopped_rev = post_from({"error": {"code": 402, "message": "out of credit"}})
+    s2 = extract.run_stage(pipe, FakeClaude(pass1), review_client=stopped_rev,
+                           review_model="thinkingmachines/inkling-2-small")
+    assert s2["pending"] == 1 and s2["stopped"] and s2["read"] == 0
+    assert s2["cost_usd"] == pytest.approx(round((1000 * 4 + 200 * 20) / 1e6, 4))
+    assert table(pipe, "SELECT count(*) FROM im.extractions") == [(7,)]
+
+    good = post_from({"kept": [{"ids": [1], "gist": "Garden sensors could use LoRa."}], "dropped": []})
+    s3 = extract.run_stage(pipe, FakeClaude(pass1), review_client=good, review_model="thinkingmachines/inkling-2-small")
+    assert (s3["pending"], s3["read"], s3["reviewed"], s3["failed"]) == (1, 1, 1, 0)
+    assert table(pipe, "SELECT count(*) FROM im.extractions") == [(8,)]
+
+
+def test_review_model_triggers_reread_gate_and_forgetting_purges_both_passes(pipe, cfg, stream, monkeypatch):
+    from im import cli, fixtures, llm
+
+    run(pipe, cfg, stream)
+    monkeypatch.setattr(anthropic, "Anthropic", lambda: FakeClaude(coffee_item))
+    assert cli._extract(pipe, cfg)["read"] == 8
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
+    posted = []
+
+    def fake_post(self, body):
+        posted.append(body)
+        if body["model"] == "openai/gpt-6.1-terra":
+            items = [{"lines": [1], "quote": "Another secret thought for forgetting test.", "attributed_to": "",
+                      "reading": "Another secret thought for forgetting test.", "mishearings": [],
+                      "gist": "A thought to forget later."}]
+            ans = {"items": items}
+        else:
+            ans = {"kept": [{"ids": [1], "gist": "A thought to forget later."}], "dropped": []}
+        return {"id": f"or-{len(posted)}", "model": body["model"],
+                "usage": {"prompt_tokens": 400, "completion_tokens": 50, "cost": 0.001},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    monkeypatch.setattr(llm.OpenRouter, "_post", fake_post)
+    cfg2 = replace(cfg, extract=replace(cfg.extract, model="openai/gpt-6.1-terra",
+                                        review_model="thinkingmachines/inkling-2-small", review_effort="medium"))
+    held_stats = cli._extract(pipe, cfg2)
+    assert (held_stats["read"], held_stats["held"]["held"], posted) == (0, 8, [])
+
+    stream.conversations["c-secret"] = fixtures.Conversation(
+        [fixtures._me(20000, 20006, "Another secret thought for forgetting test.")])
+    stream.write(stream.dir)
+    run(pipe, cfg, stream)
+
+    new_stats = cli._extract(pipe, cfg2)
+    assert (new_stats["read"], new_stats["reviewed"], new_stats["held"]["held"], len(posted)) == (1, 1, 8, 2)
+
+    stream.forget(20000, 20006)
+    stream.write(stream.dir)
+    run(pipe, cfg, stream)
+
+    assert table(pipe, "SELECT count(*) FROM im.items WHERE quote LIKE '%%Another secret thought%%'") == [(0,)]
+    assert table(pipe, "SELECT count(*) FROM im.egress_log WHERE payload LIKE '%%Another secret thought%%'") == [(0,)]
+    (sent,) = extract.forgotten_sent(pipe)
+    assert sent[3] == 2
+    assert_invariants(pipe)

@@ -199,9 +199,12 @@ def _store(conn, conversation: str, session: list[dict], p: egress.Payload, mode
 
 
 def import_sessions(conn, client, p: dict, model: str, effort: str, monthly_cap_usd: float,
-                    max_tokens: int | None = None) -> dict:
-    """Read each session not read yet with extraction v5.3 and store what it captures."""
-    pv = extract.prompt_version(model, effort, extract.SYSTEM_V5_3, extract.SCHEMA_V5)
+                    max_tokens: int | None = None, review_client=None, review_model: str | None = None,
+                    review_effort: str = extract.ExtractConfig.review_effort) -> dict:
+    """Read each session not read yet with extraction v5.3 (and optional Pass-2 review) and store what it captures."""
+    if review_model and review_client is None:
+        raise ValueError("review_client is required when review_model is set")
+    pv = extract.prompt_version(model, effort, extract.SYSTEM_V5_3, extract.SCHEMA_V5, review_model, review_effort)
     read = already_read(conn, p)
     stats = {"model": model, "prompt_version": pv, "sessions": len(p["sessions"]), "already_read": 0, "read": 0,
              "items": 0, "refused": 0, "failed": 0, "cost_usd": 0.0, "stopped": None}
@@ -222,9 +225,23 @@ def import_sessions(conn, client, p: dict, model: str, effort: str, monthly_cap_
         if a.failed:   # logged and counted, not recorded as read: sent again on the next --write
             stats["failed"] += 1
             continue
+        items = a.data or []
+        if review_model and items and not a.refused:
+            try:
+                r, reviewed, _, _ = extract._review(
+                    conn, review_client, sent, items, pv, review_model, review_effort, monthly_cap_usd,
+                    max_tokens=max_tokens, segment_ids=[], episode_id=None)
+            except llm.Stop as e:
+                stats["stopped"] = str(e)[:200]
+                break
+            stats["cost_usd"] += r.cost_usd
+            if reviewed is None:
+                stats["failed"] += 1
+                continue
+            items = reviewed
         stats["read"] += 1
         stats["refused"] += a.refused
-        _store(conn, p["conversation"], session, sent, model, pv, a.egress_id, a.data or [])
-        stats["items"] += len(a.data or [])
+        _store(conn, p["conversation"], session, sent, model, pv, a.egress_id, items)
+        stats["items"] += len(items)
     stats["cost_usd"] = round(stats["cost_usd"], 4)
     return stats

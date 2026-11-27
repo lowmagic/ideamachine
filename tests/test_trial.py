@@ -5,7 +5,9 @@ import json
 from dataclasses import replace
 from types import SimpleNamespace
 
-from im import cli, config, egress, extract, jev, trial
+import pytest
+
+from im import cli, config, egress, extract, jev, llm, trial
 
 from helpers import run, system_of, table
 from test_carry import DATABASE, capture
@@ -254,3 +256,98 @@ def test_recall_is_split_by_how_far_each_captures_idea_reaches(seeded_lattice):
     assert trial.by_reach(conn, [(e, lora[0], True) for (e,) in table(
         conn, "SELECT episode_id FROM im.prompt_trials WHERE items::text LIKE '%%LoRa%%' LIMIT 1")])["one_off"] == \
         {"captures": 1, "recall": 1.0}
+
+
+def test_a_trial_can_be_scored_against_the_live_read_including_same_point_and_cost(
+        pipe, cfg, stream, monkeypatch, capsys):
+    run(pipe, cfg, stream)
+    v5 = extract.SYSTEM_V5_3
+    extract.run_stage(pipe, FakeClaude(both(DATABASE, "coffee")))
+    episodes = table(pipe, "SELECT count(*) FROM im.episodes WHERE current AND kind <> 'others_only'")[0][0]
+    assert table(pipe, "SELECT count(*) FROM im.prompt_trials WHERE model = 'claude-opus-5-5'") == [(0,)]
+
+    def post(body):
+        text = body["messages"][1]["content"]
+        return {"id": "gen-1", "model": "google/gemini-4-neon-20261118",
+                "usage": {"prompt_tokens": 800, "completion_tokens": 120, "cost": 0.002},
+                "choices": [{"finish_reason": "stop",
+                             "message": {"content": json.dumps({"items": both(DATABASE, "lockfile")(text)}),
+                                         "refusal": None}}]}
+
+    neon = "google/gemini-4-neon"
+    stats = trial.run(pipe, llm.OpenRouter(post=post), v5, model=neon)
+    assert stats["read"] == episodes
+    cand = (trial.version(neon, "medium", v5), neon)
+    ref = (extract.prompt_version("claude-opus-5-5", "medium"), "claude-opus-5-5")
+
+    r = trial.report(pipe, cand, ref, live_reference=True)
+    assert (r["episodes"], r["reference_captures"], r["found"], r["candidate_captures"], r["extra"]) == \
+        (episodes, 2, 1, 2, 1)
+    assert r["recall"] == 0.5
+    assert r["cost_usd"] == pytest.approx(episodes * 0.002) and r["reference_cost_usd"] > 0
+    assert r["cost_vs_reference"] == round(r["cost_usd"] / r["reference_cost_usd"], 3)
+    assert r["checks"]["candidate"] == {"captures": 2, "pass": 0.5,
+                                        "failing": {"cites_none_of_mine": 1, "quote_not_mine": 1}}
+    assert r["checks"]["reference"] == {"captures": 2, "pass": 0.0,
+                                        "failing": {"cites_none_of_mine": 2, "quote_not_mine": 2}}
+    assert r["verbatim_quotes"] == {"candidate": 1.0, "reference": 1.0}
+    assert r["quotes_not_in_lines"] == {"candidate": 0.0, "reference": 0.0}
+
+    judge, _ = fake({"same": 0.9, "same_v2": 0.8})
+    sp = trial.same_point(pipe, judge, cand, ref, 20.0, live_reference=True)
+    assert sp["pairs"] == 1 and sp["asked"] == 1
+    r_sp = trial.report(pipe, cand, ref, jev.kept(pipe, jev.question_set(judge, "match")), live_reference=True)
+    assert r_sp["found_by_same_point"] == 1 and r_sp["found"] == 2 and r_sp["recall"] == 1.0
+
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+    cli.main(["trial", "v5.3", "--model", neon, "--live", "--report"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["report"]["recall"] == 0.5 and out["report"]["reference_captures"] == 2
+
+
+def test_a_two_pass_trial_skips_empty_episodes_and_includes_review_cost(pipe, cfg, stream, monkeypatch, capsys):
+    run(pipe, cfg, stream)
+    v5 = extract.SYSTEM_V5_3
+    extract.run_stage(pipe, FakeClaude(both(DATABASE, "coffee")))
+    episodes = table(pipe, "SELECT count(*) FROM im.episodes WHERE current AND kind <> 'others_only'")[0][0]
+    p1_calls, p2_calls = [], []
+
+    def p1_post(body):
+        p1_calls.append(body)
+        text = body["messages"][1]["content"]
+        items = both(DATABASE, "lockfile")(text)
+        if "lockfile" in text:
+            items += both("Did you see")(text)
+        return {"id": f"p1-{len(p1_calls)}", "model": "openai/gpt-6.1-terra",
+                "usage": {"prompt_tokens": 700, "completion_tokens": 100, "cost": 0.003},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps({"items": items}),
+                                                                  "refusal": None}}]}
+
+    def p2_post(body):
+        p2_calls.append(body)
+        content = body["messages"][1]["content"]
+        if "lockfile" in content:
+            ans = {"kept": [{"ids": [1], "gist": "Pin the cache key to the lockfile hash."}],
+                   "dropped": [{"id": 2, "reason": "small talk"}]}
+        else:
+            ans = {"kept": [{"ids": [1], "gist": "Move off the managed database."}], "dropped": []}
+        return {"id": f"p2-{len(p2_calls)}", "model": "thinkingmachines/inkling-2-small",
+                "usage": {"prompt_tokens": 800, "completion_tokens": 60, "cost": 0.001},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    terra, inkling = "openai/gpt-6.1-terra", "thinkingmachines/inkling-2-small"
+    stats = trial.run(pipe, llm.OpenRouter(post=p1_post), v5, model=terra,
+                      review_client=llm.OpenRouter(post=p2_post), review_model=inkling, review_effort="medium")
+    assert (stats["read"], stats["reviewed"], stats["review_drops"]) == (episodes, 2, 1)
+    assert len(p1_calls) == episodes and len(p2_calls) == 2
+    assert stats["cost_usd"] == pytest.approx(round(episodes * 0.003 + 2 * 0.001, 4))
+
+    cand = (trial.version(terra, "medium", v5, review_model=inkling, review_effort="medium"), terra)
+    ref = (extract.prompt_version("claude-opus-5-5", "medium"), "claude-opus-5-5")
+    r = trial.report(pipe, cand, ref, live_reference=True)
+    assert r["cost_usd"] == pytest.approx(round(episodes * 0.003 + 2 * 0.001, 4))
+
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+    cli.main(["trial", "v5.3", "--model", terra, "--review-model", inkling, "--live", "--report"])
+    cli_out = json.loads(capsys.readouterr().out)
+    assert cli_out["report"]["cost_usd"] == r["cost_usd"] and cli_out["report"]["recall"] == r["recall"]

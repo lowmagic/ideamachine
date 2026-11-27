@@ -52,6 +52,7 @@ SYSTEM_V5_4 = resources.files("im.prompts").joinpath("extract_v5_4.txt").read_te
 # Every prompt here captures only my speech (decision 0011), so an episode where I don't speak isn't sent (_pending).
 PROMPTS = {"v5": SYSTEM_V5, "v5.1": SYSTEM_V5_1, "v5.2": SYSTEM_V5_2, "v5.3": SYSTEM_V5_3, "v5.4": SYSTEM_V5_4}
 LIVE = ("v5.3",)   # what `im run` may read with; v5 to v5.2 and v5.4 are for `im trial` only
+REVIEW_SYSTEM = resources.files("im.prompts").joinpath("extract_review_v1.txt").read_text().rstrip("\n")
 
 # v5's schema lists the evidence first, the gist after it; what JSON Schema can't say (lines exist and are in order,
 # strings aren't empty) is checked in code (capture_checks).
@@ -82,9 +83,46 @@ SCHEMA_V5 = {
     "additionalProperties": False,
 }
 
+REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kept": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "ids": {"type": "array", "items": {"type": "integer"}},
+                    "gist": {"type": "string"},
+                },
+                "required": ["ids", "gist"],
+                "additionalProperties": False,
+            },
+        },
+        "dropped": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id", "reason"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    "required": ["kept", "dropped"],
+    "additionalProperties": False,
+}
 
-def prompt_version(model: str, effort: str, system: str = SYSTEM_V5_3, schema: dict = SCHEMA_V5) -> str:
-    return hashlib.sha256(json.dumps([system, schema, model, effort], sort_keys=True).encode()).hexdigest()[:16]
+
+def prompt_version(model: str, effort: str, system: str = SYSTEM_V5_3, schema: dict = SCHEMA_V5,
+                   review_model: str | None = None, review_effort: str = ExtractConfig.review_effort,
+                   review_system: str = REVIEW_SYSTEM, review_schema: dict = REVIEW_SCHEMA) -> str:
+    parts: list = [system, schema, model, effort]
+    if review_model:
+        parts += [review_system, review_schema, review_model, review_effort]
+    return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()[:16]
 
 
 def _pending(conn, model: str, pv: str) -> tuple[list, list]:
@@ -277,16 +315,124 @@ def _save(conn, p: egress.Payload, model: str, pv: str, egress_id: int, items: l
     return ids
 
 
+def _clean_ws(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _validate_review(answer: dict, n_items: int) -> dict:
+    if not isinstance(answer, dict) or not isinstance(answer.get("kept"), list):
+        raise ValueError("missing kept list")
+    seen: set[int] = set()
+    cleaned = []
+    for entry in answer["kept"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("ids"), list) or not entry["ids"]:
+            raise ValueError("kept entry missing non-empty ids")
+        ids = []
+        for x in entry["ids"]:
+            if isinstance(x, bool) or not isinstance(x, int) or not (1 <= x <= n_items):
+                raise ValueError(f"invalid candidate id {x!r} for 1..{n_items}")
+            if x in seen:
+                raise ValueError(f"duplicate candidate id {x}")
+            seen.add(x)
+            ids.append(x)
+        gist = entry["gist"].strip() if isinstance(entry.get("gist"), str) else ""
+        if not gist:
+            raise ValueError("empty gist")
+        cleaned.append({"ids": ids, "gist": gist})
+    dropped = answer.get("dropped") if isinstance(answer.get("dropped"), list) else []
+    return {"kept": cleaned, "dropped": dropped}
+
+
+def _format_review(transcript: str, items: list[dict]) -> str:
+    lines = ["Transcript:", transcript, "", "Candidate captures:"]
+    for idx, it in enumerate(items, 1):
+        lines.append(f"{idx}. Gist: {_clean_ws(it.get('gist', ''))}")
+        lines.append(f'   Quote: "{_clean_ws(it.get("quote", ""))}"')
+        if it.get("checks"):
+            lines.append(f"   Checks failed: {', '.join(it['checks'])}")
+    return "\n".join(lines)
+
+
+def _apply_review(src_items: list[dict], decision: dict, segment_order: list | None = None) -> list[dict]:
+    """Build final captures from Pass-2 `kept` decisions while preserving Pass-1 quotes and provenance."""
+    out: list[dict] = []
+    order = {s: n for n, s in enumerate(segment_order)} if segment_order is not None else None
+    for entry in decision["kept"]:
+        if len(entry["ids"]) == 1:
+            base = dict(src_items[entry["ids"][0] - 1])
+            base["gist"] = entry["gist"] or base.get("gist", "")
+            out.append(base)
+            continue
+        group = [src_items[i - 1] for i in sorted(entry["ids"])]
+        primary = max(group, key=lambda it: len(it.get("quote") or ""))
+        segs: list = []
+        for it in group:
+            for s in it.get("source_segment_ids") or ():
+                if s not in segs:
+                    segs.append(s)
+        if order is not None:
+            segs.sort(key=lambda s: order.get(s, len(order)))
+        mis: list[dict] = []
+        seen_mis: set[tuple[str, str]] = set()
+        for it in group:
+            for m in it.get("mishearings") or ():
+                k = (m.get("heard", ""), m.get("meant", ""))
+                if k not in seen_mis:
+                    seen_mis.add(k)
+                    mis.append(m)
+        attr = next((it.get("attributed_to") for it in group if it.get("attributed_to")), "")
+        reading = " ".join(it.get("reading", "").strip() for it in group if it.get("reading"))
+        item: dict = {
+            "quote": primary.get("quote", ""),
+            "gist": entry["gist"],
+            "reading": reading or primary.get("reading", ""),
+            "attributed_to": attr,
+            "mishearings": mis,
+            "source_segment_ids": segs,
+        }
+        if "checks" in primary:
+            item["checks"] = list(primary["checks"])
+        if "said_by" in primary:
+            item["said_by"] = primary["said_by"]
+        out.append(item)
+    return out
+
+
+def _review(conn, client, p: egress.Payload, items: list[dict], pv: str, model: str, effort: str,
+            monthly_cap_usd: float, max_tokens: int | None = None, segment_ids=None, episode_id=None,
+            system: str = REVIEW_SYSTEM, schema: dict = REVIEW_SCHEMA) -> tuple[egress.Answer, list[dict] | None, int, int]:
+    """Run Pass-2 merge/prune review on non-empty Pass-1 items, logging under `pv:review`."""
+    a = egress.ask(
+        conn, client, model, effort, system, schema, _format_review(p.text, items),
+        segment_ids=p.segment_ids if segment_ids is None else segment_ids, prompt_version=f"{pv}:review",
+        monthly_cap_usd=monthly_cap_usd, policy=p.policy, episode_id=episode_id, max_tokens=max_tokens,
+        read=lambda answer: _validate_review(answer, len(items)))
+    if a.failed or a.refused or a.data is None:
+        return a, None, 0, 0
+    final = _apply_review(items, a.data, p.segment_ids)
+    kept_ids = {i for e in a.data["kept"] for i in e["ids"]}
+    merges = sum(len(e["ids"]) - 1 for e in a.data["kept"] if len(e["ids"]) > 1)
+    drops = len(items) - len(kept_ids)
+    return a, final, merges, drops
+
+
 def run_stage(conn, client, model: str = ExtractConfig.model, effort: str = ExtractConfig.effort,
               monthly_cap_usd: float = 20.0, limit: int | None = None, system: str = SYSTEM_V5_3,
-              max_tokens: int | None = None, schema: dict = SCHEMA_V5, held_only: bool = False) -> dict:
+              max_tokens: int | None = None, schema: dict = SCHEMA_V5, held_only: bool = False,
+              review_client=None, review_model: str | None = None,
+              review_effort: str = ExtractConfig.review_effort, review_system: str = REVIEW_SYSTEM,
+              review_schema: dict = REVIEW_SCHEMA) -> dict:
     """Read every episode due under this model, prompt and schema (_pending), at most `limit`, and keep what it
     captures in im.items. What the re-read gate holds is reported under `held`; with `held_only`, only that is read
     (`im reread extract`)."""
-    pv = prompt_version(model, effort, system, schema)
+    if review_model and review_client is None:
+        raise ValueError("review_client is required when review_model is set")
+    pv = prompt_version(model, effort, system, schema, review_model, review_effort, review_system, review_schema)
     todo, held = _pending(conn, model, pv)
-    stats = {"model": model, "prompt_version": pv, "pending": len(todo), "read": 0, "reused": 0, "items": 0,
-             "refused": 0, "failed": 0, "cost_usd": 0.0, "stopped": None}
+    stats: dict = {"model": model, "prompt_version": pv, "pending": len(todo), "read": 0, "reused": 0, "items": 0,
+                   "refused": 0, "failed": 0, "cost_usd": 0.0, "stopped": None}
+    if review_model:
+        stats |= {"review_model": review_model, "reviewed": 0, "review_merges": 0, "review_drops": 0}
     if held_only:
         todo = [p for p, _ in held]
         stats["pending"] = len(todo)
@@ -312,12 +458,29 @@ def run_stage(conn, client, model: str = ExtractConfig.model, effort: str = Extr
         if a.failed:   # logged and counted, not recorded as read: read again next run
             stats["failed"] += 1
             continue
+        items = a.data or []
+        if review_model and items and not a.refused:
+            try:
+                r, reviewed, merges, drops = _review(
+                    conn, review_client, p, items, pv, review_model, review_effort, monthly_cap_usd,
+                    max_tokens=max_tokens, episode_id=p.episode_id, system=review_system, schema=review_schema)
+            except llm.Stop as e:
+                stats["stopped"] = str(e)[:200]
+                break
+            stats["cost_usd"] += r.cost_usd
+            if reviewed is None:
+                stats["failed"] += 1
+                continue
+            items = reviewed
+            stats["reviewed"] += 1
+            stats["review_merges"] += merges
+            stats["review_drops"] += drops
         stats["read"] += 1
         if a.refused:  # the whole chain declined: record it read, with nothing captured
             stats["refused"] += 1
-        _save(conn, p, model, pv, a.egress_id, a.data or [])
+        _save(conn, p, model, pv, a.egress_id, items)
         done.add(p.episode_id)
-        stats["items"] += len(a.data or [])
+        stats["items"] += len(items)
     stats["cost_usd"] = round(stats["cost_usd"], 4)
     stats["spent_this_month_usd"] = round(egress.spent_this_month(conn), 4)
     return reread.add(stats, held_report(conn, [h for h in held if h[0].episode_id not in done], model, pv))

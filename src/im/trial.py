@@ -70,19 +70,24 @@ def held_out(conn, folders) -> tuple[set[str], int]:
 def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str = "medium",
         monthly_cap_usd: float = 20.0, limit: int | None = None, n: int = SAMPLE,
         replicate: int = 1, schema: dict = extract.SCHEMA_V5, max_tokens: int | None = None,
-        seed: int | None = None, exclude=()) -> dict:
+        seed: int | None = None, exclude=(), review_client=None, review_model: str | None = None,
+        review_effort: str = extract.ExtractConfig.review_effort) -> dict:
     """Send the sampled episodes this model hasn't read yet under this prompt and policy (or whose payload changed).
     `max_tokens`, each request's output budget, isn't part of the trial's version; nor are `seed` and `exclude` (the
     sample's order and held-out episodes: see sample)."""
-    pv = version(model, effort, system, replicate, schema)
+    if review_model and review_client is None:
+        raise ValueError("review_client is required when review_model is set")
+    pv = version(model, effort, system, replicate, schema, review_model, review_effort)
     policy = egress.POLICY_VERSION
     done = {r[0]: r[1] for r in conn.execute(
         """SELECT episode_id, payload_sha256 FROM im.prompt_trials
            WHERE prompt_version = %s AND model = %s AND privacy_policy_version = %s""", (pv, model, policy))}
     todo = [p for p in (egress.build(conn, eid) for eid in sample(conn, n, seed, exclude))
             if done.get(p.episode_id) != p.sha256]
-    stats = {"model": model, "prompt_version": pv, "pending": len(todo), "read": 0, "failed": 0, "cost_usd": 0.0,
-             "stopped": None}
+    stats: dict = {"model": model, "prompt_version": pv, "pending": len(todo), "read": 0, "failed": 0, "cost_usd": 0.0,
+                   "stopped": None}
+    if review_model:
+        stats |= {"review_model": review_model, "reviewed": 0, "review_merges": 0, "review_drops": 0}
     for p in todo[:limit] if limit else todo:
         try:
             a = egress.ask(conn, client, model, effort, system, schema, p.text, segment_ids=p.segment_ids,
@@ -96,7 +101,23 @@ def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str =
         if a.failed:   # an answer that doesn't keep to the schema: logged and paid for, read again next time
             stats["failed"] += 1
             continue
-        egress_id, items = a.egress_id, a.data or []
+        items = a.data or []
+        if review_model and items and not a.refused:
+            try:
+                r, reviewed, merges, drops = extract._review(
+                    conn, review_client, p, items, pv, review_model, review_effort, monthly_cap_usd,
+                    max_tokens=max_tokens, episode_id=p.episode_id)
+            except llm.Stop as e:
+                stats["stopped"] = str(e)[:200]
+                break
+            stats["cost_usd"] += r.cost_usd
+            if reviewed is None:
+                stats["failed"] += 1
+                continue
+            items = reviewed
+            stats["reviewed"] += 1
+            stats["review_merges"] += merges
+            stats["review_drops"] += drops
         rows = [{k: it[k] for k in KEEP if k in it} | {"source_segment_ids": [str(s) for s in it["source_segment_ids"]]}
                 for it in items]
         conn.execute(
@@ -105,25 +126,65 @@ def run(conn, client, system: str, model: str = "claude-opus-5-5", effort: str =
                ON CONFLICT (episode_id, prompt_version, model, privacy_policy_version) DO UPDATE
                SET payload_sha256 = excluded.payload_sha256, egress_id = excluded.egress_id, items = excluded.items,
                    created_at = now()""",
-            (p.episode_id, pv, model, policy, p.sha256, egress_id, json.dumps(rows)))
+            (p.episode_id, pv, model, policy, p.sha256, a.egress_id, json.dumps(rows)))
         stats["read"] += 1
     stats["cost_usd"] = round(stats["cost_usd"], 4)
     return stats
 
 
-def version(model: str, effort: str, system: str, replicate: int = 1, schema: dict = extract.SCHEMA_V5) -> str:
+def version(model: str, effort: str, system: str, replicate: int = 1, schema: dict = extract.SCHEMA_V5,
+            review_model: str | None = None, review_effort: str = extract.ExtractConfig.review_effort) -> str:
     """The prompt version a trial is filed under; a replicate's is marked `~n`."""
-    pv = extract.prompt_version(model, effort, system, schema)
+    pv = extract.prompt_version(model, effort, system, schema, review_model, review_effort)
     return pv if replicate == 1 else f"{pv}~{replicate}"
 
 
 def _reads(conn, pv: str, model: str) -> dict:
     """episode_id -> (payload sha, items, cost) for one model's trial, under the policy requests go out under now."""
     return {eid: (sha, items, float(cost) if cost is not None else None) for eid, sha, items, cost in conn.execute(
-        """SELECT t.episode_id, t.payload_sha256, t.items, g.cost_usd FROM im.prompt_trials t
-           JOIN im.egress_log g USING (egress_id)
+        """SELECT t.episode_id, t.payload_sha256, t.items,
+                  g.cost_usd + coalesce((
+                    SELECT r.cost_usd FROM im.egress_log r
+                    WHERE r.episode_id = t.episode_id AND r.prompt_version = t.prompt_version || ':review'
+                      AND r.privacy_policy_version = t.privacy_policy_version AND r.error IS NULL
+                    ORDER BY r.egress_id DESC LIMIT 1), 0)
+           FROM im.prompt_trials t JOIN im.egress_log g USING (egress_id)
            WHERE t.prompt_version = %s AND t.model = %s AND t.privacy_policy_version = %s""",
         (pv, model, egress.POLICY_VERSION))}
+
+
+def live_reads(conn, pv: str, model: str) -> dict:
+    """episode_id -> (payload sha, items, cost) for the live read in im.extractions and im.items."""
+    args = (pv, model, egress.POLICY_VERSION)
+    out = {eid: (sha, [], float(cost) if cost is not None else None) for eid, sha, cost in conn.execute(
+        """SELECT x.episode_id, x.input_hash,
+                  g.cost_usd + coalesce((
+                    SELECT r.cost_usd FROM im.egress_log r
+                    WHERE r.episode_id = x.episode_id AND r.prompt_version = x.prompt_version || ':review'
+                      AND r.privacy_policy_version = x.privacy_policy_version AND r.error IS NULL
+                    ORDER BY r.egress_id DESC LIMIT 1), 0)
+           FROM im.extractions x
+           JOIN im.episodes e ON e.episode_id = x.episode_id AND e.current
+           JOIN im.egress_log g USING (egress_id)
+           WHERE x.prompt_version = %s AND x.model = %s AND x.privacy_policy_version = %s""", args)}
+    if not out:
+        return out
+    for eid, quote, gist, reading, attributed_to, mishearings, checks_val, segs in conn.execute(
+            """SELECT episode_id, quote, gist, reading, attributed_to, mishearings, checks, source_segment_ids
+               FROM im.items
+               WHERE prompt_version = %s AND model = %s AND privacy_policy_version = %s AND episode_id = ANY(%s)
+               ORDER BY item_id""", (*args, list(out))):
+        item: dict = {"quote": quote, "gist": gist, "source_segment_ids": [str(s) for s in segs]}
+        if reading is not None:
+            item["reading"] = reading
+        if attributed_to is not None:
+            item["attributed_to"] = attributed_to
+        if mishearings is not None:
+            item["mishearings"] = mishearings
+        if checks_val is not None:
+            item["checks"] = list(checks_val)
+        out[eid][1].append(item)
+    return out
 
 
 def _matched(ref: list[dict], cand: list[dict]) -> dict:
@@ -160,10 +221,12 @@ def _same_point(ref: list[dict], cand: list[dict], m: dict, answers: dict) -> di
     return out
 
 
-def same_point(conn, client, candidate: tuple[str, str], reference: tuple[str, str], monthly_cap_usd: float) -> dict:
+def same_point(conn, client, candidate: tuple[str, str], reference: tuple[str, str], monthly_cap_usd: float,
+               live_reference: bool = False) -> dict:
     """Ask Jev about every pair quote matching left apart in the episodes both read (see the module's docstring);
     answers already kept aren't asked again."""
-    cand, ref = _reads(conn, *candidate), _reads(conn, *reference)
+    cand = _reads(conn, *candidate)
+    ref = live_reads(conn, *reference) if live_reference else _reads(conn, *reference)
     stats = {"pairs": 0, "asked": 0, "failed": 0, "cost_usd": 0.0, "stopped": None}
     for eid in (e for e in cand if e in ref and cand[e][0] == ref[e][0]):
         r_items, c_items = ref[eid][1], cand[eid][1]
@@ -233,11 +296,13 @@ def by_reach(conn, found: list) -> dict:
     return {r: {"captures": t, "recall": round(f / t, 3) if t else None} for r, (t, f) in n.items()}
 
 
-def report(conn, candidate: tuple[str, str], reference: tuple[str, str], same: dict | None = None) -> dict:
+def report(conn, candidate: tuple[str, str], reference: tuple[str, str], same: dict | None = None,
+           live_reference: bool = False) -> dict:
     """How a candidate's captures compare with a reference's, on the episodes both read with the same payload.
     `candidate` and `reference` are (prompt_version, model). With `same` (Jev's kept answers, jev.kept), a pair
     making the same point counts as found too, and `found_by_same_point` says how many did."""
-    cand, ref = _reads(conn, *candidate), _reads(conn, *reference)
+    cand = _reads(conn, *candidate)
+    ref = live_reads(conn, *reference) if live_reference else _reads(conn, *reference)
     both = [eid for eid in cand if eid in ref and cand[eid][0] == ref[eid][0]]
     n = {"reference_captures": 0, "found": 0, "candidate_captures": 0, "extra": 0,
          "episodes_reference_captured_in": 0, "of_those_candidate_captured_nothing": 0} \

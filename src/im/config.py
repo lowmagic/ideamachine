@@ -29,7 +29,9 @@ class ExtractConfig:
     enabled: bool = True
     model: str = "claude-opus-5-5"
     effort: str = "medium"
-    prompt: str = "v5.3"                 # extract.LIVE; a new one reads new speech, the rest waits for `im reread`
+    prompt: str = "v5.3"
+    review_model: str | None = None      # optional Pass-2 merge/prune reviewer (None: single-pass extraction)
+    review_effort: str = "medium"        # reviewer's reasoning effort (ignored when review_model is None)
     monthly_cap_usd: float = 20.0        # every paid request stops once the month's egress spend reaches this
     max_episodes_per_run: int | None = None
     max_tokens: int | None = None        # a request's output budget, reasoning included (None: llm.MAX_TOKENS)
