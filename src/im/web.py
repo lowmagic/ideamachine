@@ -155,6 +155,176 @@ def feed(conn, show: str = "candidates", page: int = 0, demo: bool = False) -> s
                  f"<ol>{cards or '<li>Nothing here.</li>'}</ol>{more}")
 
 
+def _dismissed_ids(conn, idea_ids) -> set[str]:
+    """Which of `idea_ids` are currently dismissed: latest keep/unkeep/dismiss event is `idea_dismiss`."""
+    ids = sorted({str(i) for i in idea_ids if i is not None})
+    if not ids:
+        return set()
+    return {str(i) for i, kind in conn.execute(
+        """SELECT idea_id, kind FROM (
+             SELECT DISTINCT ON (idea_id) idea_id, kind
+             FROM pub.feedback_events
+             WHERE idea_id = ANY(%s::uuid[]) AND kind IN ('idea_keep', 'idea_unkeep', 'idea_dismiss')
+             ORDER BY idea_id, event_id DESC
+           ) latest WHERE kind = 'idea_dismiss'""", (ids,))}
+
+
+def _dismissal(conn, idea_id: str, demo: bool = False) -> dict | None:
+    """Current dismissal state for `idea_id`, else None. Always None in demo mode."""
+    if demo:
+        return None
+    rows = conn.execute(
+        """SELECT kind, payload, at FROM pub.feedback_events
+           WHERE idea_id = %s AND kind IN ('idea_keep', 'idea_unkeep', 'idea_dismiss')
+           ORDER BY event_id DESC""", (idea_id,)).fetchall()
+    if not rows or rows[0][0] != "idea_dismiss":
+        return None
+    reason, of = None, None
+    for kind, payload, _ in rows:
+        if kind != "idea_dismiss":
+            break
+        if isinstance(payload, dict) and payload.get("reason"):
+            reason = payload["reason"]
+            of = payload.get("of")
+            break
+    of_title = None
+    if of:
+        row = conn.execute("SELECT title FROM pub.cards WHERE idea_id = %s", (of,)).fetchone()
+        of_title = row[0] if row else None
+    return {"reason": reason, "of": of, "of_title": of_title, "at": rows[0][2]}
+
+
+def _neighbors(conn, idea_id: str, demo: bool = False) -> dict:
+    """Previous and next cards around `idea_id` in chronological transcript order, plus active-only skips."""
+    v = _views(demo)
+    shown = "AND NOT c.redacted" if demo else ""
+    moments = _rows(conn, f"""SELECT m.idea_id::text AS idea_id, m.conversation_id, m.said_at, c.title
+                              FROM {v}card_moments m JOIN {v}cards c USING (idea_id)
+                              WHERE m.said_at IS NOT NULL {shown}
+                              ORDER BY m.said_at, m.conversation_id, m.item_id, m.observation_id""")
+    idx = max((n for n, m in enumerate(moments) if m["idea_id"] == idea_id), default=None)
+    if idx is None:
+        return {}
+    anchor = moments[idx]
+    dismissed = set() if demo else _dismissed_ids(conn, [m["idea_id"] for m in moments])
+
+    def walk(step: int) -> tuple[dict | None, dict | None]:
+        immediate, active, seen, skipped = None, None, {idea_id}, 0
+        k = idx + step
+        while 0 <= k < len(moments):
+            m = moments[k]
+            k += step
+            mid = m["idea_id"]
+            if mid in seen:
+                continue
+            seen.add(mid)
+            is_dropped = mid in dismissed
+            info = {
+                "idea_id": mid,
+                "title": m["title"] or "(untitled)",
+                "gap": _apart(m["said_at"], anchor["said_at"]),
+                "same_conv": m["conversation_id"] is not None and m["conversation_id"] == anchor["conversation_id"],
+                "dismissed": is_dropped,
+            }
+            if immediate is None:
+                immediate = info
+            if not is_dropped:
+                active = info | {"skipped": skipped}
+                break
+            skipped += 1
+        return immediate, active
+
+    prev_card, prev_active = walk(-1)
+    next_card, next_active = walk(1)
+    return {"prev": prev_card, "prev_active": prev_active, "next": next_card, "next_active": next_active}
+
+
+def _card_nav(nav: dict, demo: bool = False) -> str:
+    """Conversation prev/next bar with fixed button positions and active-only skip buttons."""
+    if not nav:
+        return ""
+    p, pa, n, na = nav.get("prev"), nav.get("prev_active"), nav.get("next"), nav.get("next_active")
+
+    def button(item: dict | None, elem_id: str, label: str, cls: str, skip: bool = False) -> str:
+        if not item:
+            return f'<span class="btn {cls} disabled" aria-disabled="true">{label}</span>'
+        extra = " has-skip" if skip and item.get("skipped") else ""
+        return f'<a class="btn {cls}{extra}" id="{elem_id}" href="/idea/{item["idea_id"]}">{label}</a>'
+
+    def meta(item: dict | None, active: dict | None, direction: str) -> str:
+        if not item:
+            return '<small class="nav-empty">nothing ' + direction + '</small>'
+        conv = "same conversation" if item["same_conv"] else f"{'earlier' if direction == 'earlier' else 'next'} conversation"
+        tag = ' <span class="tag dropped">dropped</span>' if item["dismissed"] else ""
+        line = (f'<small><a href="/idea/{item["idea_id"]}">{_e(item["title"])}</a> · '
+                f'{_e(item["gap"])} {direction}, {conv}{tag}</small>')
+        if not demo and active and active["idea_id"] != item["idea_id"]:
+            act_conv = ("same conversation" if active["same_conv"]
+                        else f"{'earlier' if direction == 'earlier' else 'next'} conversation")
+            line += (f'<small class="nav-skip">Active (skips {active["skipped"]} dropped): '
+                     f'<a href="/idea/{active["idea_id"]}">{_e(active["title"])}</a> · '
+                     f'{_e(active["gap"])} {direction}, {act_conv}</small>')
+        return line
+
+    left_btns = button(p, "nav-prev", "← Previous", "trellis")
+    right_btns = ""
+    if not demo:
+        left_btns += " " + button(pa, "nav-prev-active", "↞ Prev active", "view", skip=True)
+        right_btns += button(na, "nav-next-active", "Next active ↠", "view", skip=True) + " "
+    right_btns += button(n, "nav-next", "Next →", "trellis")
+    shortcut = ('<small class="nav-hint"><kbd>←</kbd> <kbd>→</kbd> step · <kbd>Shift+←</kbd> <kbd>Shift+→</kbd>'
+                ' skip dropped</small>') if not demo else '<small class="nav-hint"><kbd>←</kbd> <kbd>→</kbd> step</small>'
+    key_map = ('e.key === "ArrowLeft" ? "nav-prev" : e.key === "ArrowRight" ? "nav-next" : null' if demo else
+               'e.key === "ArrowLeft" ? (e.shiftKey ? "nav-prev-active" : "nav-prev") '
+               ': e.key === "ArrowRight" ? (e.shiftKey ? "nav-next-active" : "nav-next") : null')
+    script = f"""<script>
+"use strict";
+addEventListener("keydown", e => {{
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target && e.target.closest("input, textarea, select, button, [contenteditable]")) return;
+  const id = {key_map};
+  const link = id && document.getElementById(id);
+  if (link) {{ e.preventDefault(); location.href = link.href; }}
+}});
+</script>"""
+    return (f'<nav class="card-nav" aria-label="Conversation navigation">'
+            f'<div class="nav-side nav-prev"><div class="nav-btns">{left_btns}</div>{meta(p, pa, "earlier")}</div>'
+            f'<div class="nav-side nav-next"><div class="nav-btns">{right_btns}</div>{meta(n, na, "later")}</div>'
+            f'</nav>{shortcut}{script}')
+
+
+def _meta_chips(r: dict) -> str:
+    chips = []
+    said = [f"{n} {label}" for n, label in ((r["by_me"], "me"), (r["by_me_diar"], "me (diar)"),
+                                            (r["by_others"], "not me")) if n]
+    if said:
+        chips.append(", ".join(said))
+    if r["conversations"]:
+        chips.append(f"{r['conversations']} conversation{'s' * (r['conversations'] != 1)}")
+    if r["first_said"]:
+        first, last = _when(r["first_said"]), _when(r["last_seen"])
+        chips.append(first if first == last else f"{first} → {last}")
+    elif r["last_seen"]:
+        chips.append(_when(r["last_seen"]))
+    if r["links"]:
+        chips.append(f"{r['links']} edge{'s' * (r['links'] != 1)}")
+    return "".join(f'<span class="chip">{_e(c)}</span>' for c in chips)
+
+
+def _curation(idea_id: str, r: dict, near: list, dropped: dict | None) -> str:
+    """Keep and Drop panels for curating a card."""
+    canon_cls = " is-current" if r["kept_as"] == "canonical" else ""
+    pin_cls = " is-current" if r["kept_as"] == "pinned" else ""
+    restore = (f'<button class="btn-act restore" name="action" value="unkeep">'
+               f'{"Restore to active" if dropped else "Unkeep"}</button>') if (dropped or r["kept_as"]) else ""
+    keep_row = (f'<div class="curate-row"><span class="curate-label">Keep</span>'
+                f'<form class="curate-btns" method="post" action="/idea/{idea_id}">'
+                f'<button class="btn-act keep{canon_cls}" name="action" value="canonical">Keep as canonical</button>'
+                f'<button class="btn-act keep{pin_cls}" name="action" value="pinned">Pin</button>'
+                f'{restore}</form></div>')
+    return f'<section class="panel curation" aria-label="Curate">{keep_row}{_why(idea_id, near, dropped)}</section>'
+
+
 def card(conn, idea_id: str, demo: bool = False) -> str | None:
     v = _views(demo)
     shown = "AND NOT c.redacted" if demo else ""
@@ -164,43 +334,92 @@ def card(conn, idea_id: str, demo: bool = False) -> str | None:
     r = rows[0]
     if demo and r["redacted"]:
         return _page("Hidden", f"<h1>Hidden in demo mode</h1><small>{_e(_facts(r))}</small>")
-    quotes = _rows(conn, f"""SELECT speaker, quote, said_at, reading, claude_reading FROM {v}card_evidence
-                             WHERE idea_id = %s ORDER BY said_at, item_id""", (idea_id,))
-    links = _rows(conn, f"""SELECT l.kind, l.kinds, c.idea_id, c.title FROM pub.card_links l
+    dropped = _dismissal(conn, idea_id, demo)
+    nav = _neighbors(conn, idea_id, demo)
+    quotes = _rows(conn, f"""SELECT speaker, quote, gist, said_at, source, reading, claude_reading
+                             FROM {v}card_evidence WHERE idea_id = %s ORDER BY said_at, item_id""", (idea_id,))
+    links = _rows(conn, f"""SELECT l.kind, l.kinds, c.idea_id::text AS idea_id, c.title, j.why, j.analogy
+                            FROM pub.card_links l
                             JOIN {v}cards c ON c.idea_id = CASE WHEN l.a = %s THEN l.b ELSE l.a END
+                            LEFT JOIN pub.card_judgments j ON j.a = least(l.a, l.b) AND j.b = greatest(l.a, l.b)
                             WHERE %s IN (l.a, l.b) {shown} ORDER BY l.kind, c.title""", (idea_id, idea_id))
     lineage = _rows(conn, f"""SELECT CASE WHEN l.from_id = %s THEN l.kind WHEN l.kind = 'evolves' THEN 'evolved by'
                                           ELSE 'synthesized in' END AS kind,
-                                     c.idea_id, c.title FROM pub.card_lineage l
+                                     c.idea_id::text AS idea_id, c.title FROM pub.card_lineage l
                               JOIN {v}cards c ON c.idea_id = CASE WHEN l.from_id = %s THEN l.to_id ELSE l.from_id END
                               WHERE %s IN (l.from_id, l.to_id) {shown} ORDER BY 1, c.title""",
                     (idea_id, idea_id, idea_id))
-    near = _rows(conn, f"""SELECT c.idea_id, c.title, n.similarity FROM pub.card_neighbours(%s) n
+    near = _rows(conn, f"""SELECT c.idea_id::text AS idea_id, c.title, n.similarity FROM pub.card_neighbours(%s) n
                            JOIN {v}cards c USING (idea_id) WHERE true {shown} ORDER BY n.similarity DESC""",
                  (idea_id,))
-    buttons = "".join(f'<button name="action" value="{a}">{a}</button>' for a in ACTIONS)
-    body = [f"<h1>{_e(r['title'])}</h1><p>{_e(r['statement'])}</p><small>{_e(_facts(r))}</small>",
-            "" if demo else f'<form method="post" action="/idea/{idea_id}">{buttons}</form>{_why(idea_id, near)}',
-            f'<p><a class="btn view" href="/sky?constellation={idea_id}">Its constellation</a> '
-            f'<a class="btn view" href="/sky?seed={idea_id}">Light the sky from here</a> '
-            f'<a class="btn view" href="/trails?at={idea_id}">Its trail</a> '
-            f'<a class="btn view" href="/crossroads/{idea_id}">Its crossroads</a>'
-            + ("" if demo else f' <a class="btn trellis" href="/idea/{idea_id}/edit">Edit</a>') + "</p>"]
+    neighbor_dismissed = set() if demo else _dismissed_ids(
+        conn, [x["idea_id"] for x in links + lineage + near])
+    dtag = lambda nid: ' <span class="tag dropped">dropped</span>' if nid in neighbor_dismissed else ""  # noqa: E731
+
+    badges = []
+    if dropped:
+        badges.append('<span class="badge dropped">Dropped</span>')
+        if dropped["reason"]:
+            label = _e(REASONS.get(dropped["reason"], dropped["reason"]))
+            if dropped["of"]:
+                label += f' · <a href="/idea/{dropped["of"]}">{_e(dropped["of_title"] or "card")}</a>'
+            badges.append(f'<span class="badge reason">{label}</span>')
+        badges.append(f'<small class="badge-note">dismissed {_when(dropped["at"])}</small>')
+    elif r["kept_as"]:
+        badges.append(f'<span class="badge kept">Kept · {_e(r["kept_as"])}</span>')
+    else:
+        badges.append(f'<span class="badge stage">{_e(r["maturity"].capitalize())}</span>')
+        if r["proposed"]:
+            badges.append('<span class="badge proposed">Proposed</span>')
+    if r["origin"] in ("mine", "archive"):
+        badges.append(f'<span class="badge origin">{"Added by me" if r["origin"] == "mine" else "From archive"}</span>')
+
+    hero_cls = "card-hero dropped" if dropped else "card-hero kept" if r["kept_as"] else "card-hero"
+    explore = (f'<p class="explore-links"><a class="btn view" href="/crossroads/{idea_id}">Crossroads</a>'
+               f'<a class="btn view" href="/sky?constellation={idea_id}">Constellation</a>'
+               f'<a class="btn view" href="/sky?seed={idea_id}">Light the sky</a>'
+               f'<a class="btn view" href="/trails?at={idea_id}">Trail</a>'
+               + ("" if demo else f'<a class="btn trellis" href="/idea/{idea_id}/edit">Edit card &amp; readings</a>')
+               + "</p>")
+    hero = (f'<section class="{hero_cls}"><div class="badges">{"".join(badges)}</div>'
+            f'<h1>{_e(r["title"])}</h1><p class="statement">{_e(r["statement"])}</p>'
+            f'<div class="meta-chips">{_meta_chips(r)}</div>{explore}</section>')
+
+    body = [_card_nav(nav, demo), hero, "" if demo else _curation(idea_id, r, near, dropped)]
     if r["my_note"]:
-        body.append(f"<h2>My note</h2><p>{_e(r['my_note'])}</p>")
-    body.append("<h2>Said</h2><ol>" + "".join(
-        f"<li><blockquote>{_e(q['quote'])}</blockquote>{_reading(q)}<small>"
-        f"{_e(SPEAKERS.get(q['speaker'], q['speaker']))} · {_when(q['said_at'])}</small></li>" for q in quotes)
-        + "</ol>" if quotes else "")
-    body.append("<h2>Connections</h2><ul>" + "".join(
-        f'<li>{_e(", ".join([x["kind"], *x["kinds"]]))}: <a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a></li>'
-        for x in links) + "</ul>" if links else "")
-    body.append("<h2>Lineage</h2><ul>" + "".join(
-        f'<li>{_e(x["kind"])}: <a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a></li>' for x in lineage)
-        + "</ul>" if lineage else "")
-    body.append("<h2>Near by meaning</h2><ul>" + "".join(
-        f'<li><a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a> <small>{x["similarity"]:.2f}</small></li>'
-        for x in near) + "</ul>" if near else "")
+        body.append(f'<section class="card-section note-section"><h2>My note</h2><p>{_e(r["my_note"])}</p></section>')
+    if quotes:
+        said_rows = "".join(
+            f'<li><blockquote>{_e(q["quote"])}</blockquote>'
+            + (f'<p class="capture-gist"><small>capture gist:</small> {_e(q["gist"])}</p>'
+               if q["gist"] and q["gist"].strip() != (r["statement"] or "").strip() else "")
+            + f'{_reading(q)}<small>{_e(SPEAKERS.get(q["speaker"], q["speaker"]))} · {_when(q["said_at"])}'
+            + (f' · {_e(q["source"])}' if q.get("source") and q["source"] != "speech" else "")
+            + "</small></li>" for q in quotes)
+        body.append(f'<section class="card-section"><h2>Said <span class="count">{len(quotes)}</span></h2>'
+                    f'<ol>{said_rows}</ol></section>')
+    if links:
+        link_rows = "".join(
+            f'<li><span class="rel-badge">{_e(", ".join([x["kind"], *x["kinds"]]))}</span> '
+            f'<a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a>{dtag(x["idea_id"])}'
+            + (f'<p class="diag-note">{_e(x["why"] or "")}'
+               + (f' <i>Same structure: {_e(x["analogy"])}</i>' if x["analogy"] else "") + "</p>"
+               if x["why"] or x["analogy"] else "")
+            + "</li>" for x in links)
+        body.append(f'<section class="card-section"><h2>Connections <span class="count">{len(links)}</span></h2>'
+                    f'<ul class="diag-list">{link_rows}</ul></section>')
+    if lineage:
+        lin_rows = "".join(
+            f'<li><span class="rel-badge">{_e(x["kind"])}</span> '
+            f'<a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a>{dtag(x["idea_id"])}</li>' for x in lineage)
+        body.append(f'<section class="card-section"><h2>Lineage <span class="count">{len(lineage)}</span></h2>'
+                    f'<ul class="diag-list">{lin_rows}</ul></section>')
+    if near:
+        near_rows = "".join(
+            f'<li><a href="/idea/{x["idea_id"]}">{_e(x["title"])}</a> '
+            f'<span class="sim">{x["similarity"]:.2f}</span>{dtag(x["idea_id"])}</li>' for x in near)
+        body.append(f'<section class="card-section"><h2>Near by meaning <span class="count">{len(near)}</span></h2>'
+                    f'<ul class="diag-list">{near_rows}</ul></section>')
     body.append(_card_lenses(conn, idea_id, demo))
     return _page(r["title"], "".join(body))
 
@@ -292,31 +511,38 @@ def _card_lenses(conn, idea_id: str, demo: bool) -> str:
     v = _views(demo)
     rows = _rows(conn, f"""SELECT l.lens_id, l.name, m.why FROM {v}lens_members m JOIN pub.lenses l USING (lens_id)
                            WHERE m.idea_id = %s ORDER BY lower(l.name)""", (idea_id,))
-    shown = "<h2>Lenses</h2><ul>" + "".join(
-        f'<li><a href="/lens/{x["lens_id"]}">{_e(x["name"])}</a> '
-        f'<small>{"pinned in" if x["why"] == "pin" else "by its query"}</small></li>' for x in rows) + "</ul>" \
-        if rows else ""
     lenses = _rows(conn, "SELECT lens_id, name FROM pub.lenses WHERE state <> 'archived' ORDER BY lower(name)")
-    if demo or not lenses:
-        return shown
-    options = "".join(f'<option value="{x["lens_id"]}">{_e(x["name"])}</option>' for x in lenses)
-    return (shown + f'<form method="post" action="/idea/{idea_id}"><select name="lens" aria-label="lens">{options}'
-            '</select> <button name="action" value="lens_in">pin in</button><button name="action" value="lens_out">'
-            'pin out</button><button name="action" value="lens_unpin">unpin</button></form>')
+    if not rows and (demo or not lenses):
+        return ""
+    shown = '<ul class="diag-list">' + "".join(
+        f'<li><a href="/lens/{x["lens_id"]}">{_e(x["name"])}</a> '
+        f'<span class="rel-badge">{"pinned in" if x["why"] == "pin" else "by its query"}</span></li>' for x in rows) \
+        + "</ul>" if rows else ""
+    controls = ""
+    if not demo and lenses:
+        options = "".join(f'<option value="{x["lens_id"]}">{_e(x["name"])}</option>' for x in lenses)
+        controls = (f'<form class="lens-form" method="post" action="/idea/{idea_id}"><select name="lens" aria-label="lens">'
+                    f'{options}</select> <button class="btn-act" name="action" value="lens_in">Pin in</button>'
+                    '<button class="btn-act" name="action" value="lens_out">Pin out</button>'
+                    '<button class="btn-act" name="action" value="lens_unpin">Unpin</button></form>')
+    return (f'<section class="card-section"><h2>Lenses <span class="count">{len(rows)}</span></h2>'
+            f'{shown}{controls}</section>')
 
 
-def _why(idea_id: str, near: list) -> str:
-    """Dismissing, saying why: folded away beside the plain dismiss, one tap a reason. A duplicate may name which card,
-    from those near by meaning."""
-    form = f'<form method="post" action="/idea/{idea_id}"><input type="hidden" name="action" value="dismiss">'
-    reasons = "".join(f'<button name="reason" value="{x}">{REASONS[x]}</button>'
+def _why(idea_id: str, near: list, dropped: dict | None = None) -> str:
+    """Dismissing, saying why: one tap per reason directly on the card. A duplicate may name which card."""
+    form = f'<form class="curate-btns" method="post" action="/idea/{idea_id}"><input type="hidden" name="action" value="dismiss">'
+    cur = lambda r: " is-current" if dropped and dropped["reason"] == r else ""  # noqa: E731
+    reasons = "".join(f'<button class="btn-act drop{cur(x)}" name="reason" value="{x}">{REASONS[x]}</button>'
                       for x in DismissReason if x != DismissReason.DUPLICATE)
+    plain = f'<button class="btn-act drop subtle{" is-current" if dropped and dropped["reason"] is None else ""}">drop (no reason)</button>'
     which = "".join(f'<option value="{x["idea_id"]}">{_e(x["title"])}</option>' for x in near)
     which = (f'<select name="of" aria-label="of which card"><option value="">of which? (optional)</option>{which}'
              "</select>") if near else ""
-    duplicate = f'<button name="reason" value="{DismissReason.DUPLICATE}">{REASONS[DismissReason.DUPLICATE]}</button>'
-    return (f"<details><summary>dismiss, saying why</summary>{form}{reasons}</form>"
-            f"{form}{duplicate}{which}</form></details>")
+    dup = (f'<button class="btn-act drop{cur(DismissReason.DUPLICATE)}" name="reason" '
+           f'value="{DismissReason.DUPLICATE}">{REASONS[DismissReason.DUPLICATE]}</button>')
+    return (f'<div class="curate-row"><span class="curate-label">Drop (dismiss, saying why)</span>'
+            f'<div class="curate-controls">{form}{reasons}{plain}</form>{form}{dup}{which}</form></div></div>')
 
 
 SIZES = {"observation": 0, "candidate": 1, "idea": 2}   # a canonical idea is one bigger than a pinned one
@@ -1194,6 +1420,79 @@ button {{ margin: 0 .4rem .4rem 0; font: inherit; padding: .3rem .8rem; }} selec
 summary {{ color: var(--muted); cursor: pointer; margin-bottom: .4rem; }} details button {{ font-size: .9em; }}
 header {{ display: flex; align-items: center; gap: .5rem; margin-bottom: .5rem; }}
 header a {{ color: var(--fg); text-decoration: none; font-weight: 600; }}
+.btn.view.has-skip {{ border-width: 1.5px; border-color: var(--accent); font-weight: 600; }}
+.btn.disabled {{ opacity: .4; cursor: default; pointer-events: none; }}
+.card-nav {{ display: grid; grid-template-columns: 1fr 1fr; gap: .6rem 1rem; margin-bottom: .25rem;
+  align-items: start; }}
+.nav-side {{ display: flex; flex-direction: column; gap: .25rem; min-width: 0; }}
+.nav-next {{ align-items: flex-end; text-align: right; }}
+.nav-btns {{ display: flex; flex-wrap: wrap; gap: .35rem; }}
+.nav-next .nav-btns {{ justify-content: flex-end; }}
+.nav-side small {{ font-size: .82rem; line-height: 1.35; overflow-wrap: anywhere; }}
+.nav-skip {{ color: var(--accent); }}
+.nav-hint {{ display: block; margin-bottom: .8rem; font-size: .78rem; }}
+kbd {{ font: inherit; border: 1px solid var(--line); border-radius: 4px; padding: 0 .3rem; }}
+.card-hero {{ --drop-bg: #fff1f2; --drop-border: #fecdd3; --drop-fg: #b42318;
+  --keep-bg: #ecfdf3; --keep-border: #abefc6; --keep-fg: #067647; padding: 1rem 1.15rem;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--surface); margin-bottom: .9rem; }}
+@media (prefers-color-scheme: dark) {{ .card-hero, .panel.curation, .card-nav, .card-section {{
+  --drop-bg: #2a1216; --drop-border: #6e242c; --drop-fg: #fda4af;
+  --keep-bg: #0f261b; --keep-border: #1d573a; --keep-fg: #6ce9a6; }} }}
+.card-hero.dropped {{ background: var(--drop-bg); border-color: var(--drop-border); border-left: 4px solid var(--drop-fg); }}
+.card-hero.kept {{ border-left: 4px solid var(--keep-fg); }}
+.card-hero h1 {{ margin: .35rem 0 .45rem; font-size: 1.55rem; line-height: 1.25; }}
+.card-hero .statement {{ margin: 0 0 .7rem; font-size: 1.05rem; }}
+.badges {{ display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }}
+.badge {{ display: inline-block; padding: .14rem .55rem; border-radius: 999px; font-size: .78rem; font-weight: 600;
+  border: 1px solid var(--line); background: var(--bg); color: var(--fg); }}
+.badge.dropped {{ background: var(--drop-fg); border-color: var(--drop-fg); color: #fff; }}
+.badge.reason {{ background: var(--drop-bg); border-color: var(--drop-border); color: var(--drop-fg); font-weight: 500; }}
+.badge.kept {{ background: var(--keep-bg); border-color: var(--keep-border); color: var(--keep-fg); }}
+.badge.proposed {{ background: var(--warn-bg); border-color: var(--warn-line); color: var(--warn-fg); }}
+.tag {{ display: inline-block; padding: .04rem .38rem; border-radius: 4px; font-size: .75rem; font-weight: 600;
+  vertical-align: baseline; --drop-bg: #fff1f2; --drop-border: #fecdd3; --drop-fg: #b42318; }}
+@media (prefers-color-scheme: dark) {{ .tag {{ --drop-bg: #2a1216; --drop-border: #6e242c; --drop-fg: #fda4af; }} }}
+.tag.dropped {{ background: var(--drop-bg); border: 1px solid var(--drop-border); color: var(--drop-fg); }}
+.meta-chips {{ display: flex; flex-wrap: wrap; gap: .35rem; margin-bottom: .75rem; }}
+.chip {{ padding: .12rem .5rem; border-radius: 5px; background: var(--bg); border: 1px solid var(--line);
+  font-size: .82rem; color: var(--muted); }}
+.explore-links {{ display: flex; flex-wrap: wrap; gap: .35rem; margin: 0; }}
+.panel.curation {{ --drop-bg: #fff1f2; --drop-border: #fecdd3; --drop-fg: #b42318;
+  --keep-bg: #ecfdf3; --keep-border: #abefc6; --keep-fg: #067647; border: 1px solid var(--line); border-radius: 10px;
+  padding: .8rem 1rem; margin-bottom: 1rem; display: flex; flex-direction: column; gap: .65rem; }}
+.curate-row {{ display: flex; flex-direction: column; gap: .3rem; }}
+.curate-label {{ font-size: .75rem; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }}
+.curate-controls {{ display: flex; flex-direction: column; gap: .35rem; }}
+.curate-btns {{ display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin: 0; }}
+.btn-act {{ margin: 0; padding: .28rem .65rem; border-radius: 6px; border: 1px solid var(--line); background: var(--surface);
+  color: var(--fg); font-size: .88rem; cursor: pointer; }}
+.btn-act:hover {{ border-color: var(--fg); }}
+.btn-act.keep:hover, .btn-act.keep.is-current {{ background: var(--keep-bg); border-color: var(--keep-border);
+  color: var(--keep-fg); font-weight: 600; }}
+.btn-act.restore {{ background: var(--view-bg); border-color: var(--view-line); color: var(--accent); font-weight: 500; }}
+.btn-act.drop {{ border-color: var(--drop-border); background: var(--bg); color: var(--drop-fg); }}
+.btn-act.drop:hover {{ background: var(--drop-bg); }}
+.btn-act.drop.subtle {{ color: var(--muted); border-color: var(--line); }}
+.btn-act.drop.is-current {{ background: var(--drop-fg); border-color: var(--drop-fg); color: #fff; font-weight: 600; }}
+.curate-btns select {{ padding: .24rem .4rem; border-radius: 6px; border: 1px solid var(--line); background: var(--bg);
+  color: var(--fg); font-size: .86rem; max-width: 100%; }}
+.card-section {{ margin: 1.15rem 0; padding-top: .85rem; border-top: 1px solid var(--line); }}
+.card-section h2 {{ margin: 0 0 .55rem; font-size: .95rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .05em; color: var(--muted); display: flex; align-items: center; gap: .4rem; }}
+.card-section .count {{ font-size: .78rem; padding: .05rem .42rem; border-radius: 999px; background: var(--surface);
+  border: 1px solid var(--line); color: var(--fg); }}
+.note-section p {{ margin: 0; padding: .55rem .8rem; background: var(--warn-bg); border: 1px solid var(--warn-line);
+  border-radius: 6px; }}
+.capture-gist {{ margin: .28rem 0; font-size: .9rem; color: var(--muted); }}
+.diag-list {{ list-style: none; padding-left: 0; }}
+.diag-list li {{ margin: 0 0 .55rem; }}
+.rel-badge {{ display: inline-block; padding: .06rem .42rem; border-radius: 4px; background: var(--surface);
+  border: 1px solid var(--line); font-size: .78rem; color: var(--muted); }}
+.sim {{ font-size: .82rem; color: var(--muted); font-variant-numeric: tabular-nums; }}
+.diag-note {{ margin: .18rem 0 0; font-size: .88rem; color: var(--muted); }}
+.lens-form {{ display: flex; flex-wrap: wrap; gap: .35rem; align-items: center; margin-top: .5rem; }}
+@media (max-width: 640px) {{ .card-nav {{ grid-template-columns: 1fr; }} .nav-next {{ align-items: flex-start; text-align: left; }}
+  .nav-next .nav-btns {{ justify-content: flex-start; }} }}
 </style><body><header><a href="/"><img src="/icon.svg" alt="" width="28" height="28" style="vertical-align: middle">
 Idea Machine</a></header>{body}</body></html>"""
 

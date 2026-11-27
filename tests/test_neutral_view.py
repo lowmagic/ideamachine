@@ -790,3 +790,90 @@ def test_the_sky_carries_moments_for_time_slicing_and_opens_constellations(serve
     assert sky_data(body)["constellation"] == build
     assert request(served, "GET", "/sky?constellation=nope", cookie=cookie)[0] == 404
     assert request(served, "GET", f"/sky?constellation={uuid.uuid4()}", cookie=cookie)[0] == 404
+
+
+def test_a_dropped_card_shows_its_status_and_reason_and_can_be_restored(served, matched):  # noqa: F811
+    from urllib.parse import urlencode
+
+    new, other = str(idea(matched, "Something new")), str(idea(matched, "Broken builds as signal"))
+    cookie = request(served, "POST", "/login", f"token={TOKEN}")[1]["Set-Cookie"].split(";")[0]
+
+    active = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert "card-hero dropped" not in active and "Keep as canonical" in active and "Pin" in active
+    assert "not a thought" in active and "Restore to active" not in active
+
+    assert request(served, "POST", f"/idea/{new}", "action=dismiss&reason=not_a_thought", cookie)[0] == 303
+    dropped = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert 'class="card-hero dropped"' in dropped and '<span class="badge dropped">Dropped</span>' in dropped
+    assert '<span class="badge reason">not a thought</span>' in dropped and "Restore to active" in dropped
+
+    # Plain re-dismiss preserves the existing reason.
+    assert request(served, "POST", f"/idea/{new}", "action=dismiss", cookie)[0] == 303
+    assert '<span class="badge reason">not a thought</span>' in request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+
+    # Restoring (`unkeep`) clears the dropped banner.
+    assert request(served, "POST", f"/idea/{new}", "action=unkeep", cookie)[0] == 303
+    restored = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert 'class="card-hero dropped"' not in restored and "Restore to active" not in restored
+
+    # Dismissing as a duplicate links to the target card.
+    assert request(served, "POST", f"/idea/{new}", urlencode({"action": "dismiss", "reason": "duplicate", "of": other}),
+                   cookie)[0] == 303
+    dup = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert f'href="/idea/{other}">Broken builds as signal</a>' in dup
+
+    # Keeping a dropped card restores it cleanly as kept.
+    assert request(served, "POST", f"/idea/{new}", "action=pinned", cookie)[0] == 303
+    kept = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert 'class="card-hero kept"' in kept and "Kept · pinned" in kept and "Dropped" not in kept
+
+    # Demo mode hides dismissal state and controls.
+    request(served, "POST", f"/idea/{new}", "action=dismiss&reason=not_a_thought", cookie)
+    request(served, "POST", "/demo", "action=on", cookie)
+    demo_page = request(served, "GET", f"/idea/{new}", cookie=cookie)[2]
+    assert 'class="card-hero dropped"' not in demo_page and "saying why" not in demo_page
+    assert "Keep as canonical" not in demo_page
+
+
+def test_card_previous_next_walks_conversation_and_skips_dropped_cards(matched, admin):  # noqa: F811
+    build, coffee, new = (str(idea(matched, t)) for t in (
+        "Broken builds as signal", "The coffee order is the real meeting.", "Something new"))
+    on_build = as_app(admin, web.card, build)
+    assert 'aria-disabled="true">← Previous</span>' in on_build
+    assert f'id="nav-next" href="/idea/{coffee}"' in on_build and "same conversation" in on_build
+    assert f'id="nav-next-active" href="/idea/{coffee}"' in on_build
+
+    # Dropping coffee makes Next stay on coffee (marked dropped) while Next active skips straight to Something new.
+    as_app(admin, web.act, coffee, "dismiss", "not_a_thought")
+    on_build = as_app(admin, web.card, build)
+    assert f'id="nav-next" href="/idea/{coffee}"' in on_build
+    assert '<span class="tag dropped">dropped</span>' in on_build
+    assert f'id="nav-next-active" href="/idea/{new}"' in on_build
+    assert f'Active (skips 1 dropped): <a href="/idea/{new}">Something new</a>' in on_build
+    assert "next conversation" in on_build
+
+    on_new = as_app(admin, web.card, new)
+    assert f'id="nav-prev" href="/idea/{coffee}"' in on_new
+    assert f'id="nav-prev-active" href="/idea/{build}"' in on_new
+    assert f'Active (skips 1 dropped): <a href="/idea/{build}">Broken builds as signal</a>' in on_new
+    assert "earlier conversation" in on_new
+
+    on_coffee = as_app(admin, web.card, coffee)
+    assert f'id="nav-prev" href="/idea/{build}"' in on_coffee
+    assert f'id="nav-prev-active" href="/idea/{build}"' in on_coffee
+    assert f'id="nav-next" href="/idea/{new}"' in on_coffee
+    assert f'id="nav-next-active" href="/idea/{new}"' in on_coffee
+
+    # An undated typed card renders cleanly without conversation navigation.
+    typed = uuid.uuid4()
+    as_app(admin, lambda c: c.execute(
+        "INSERT INTO pub.feedback_events (kind, idea_id, payload) VALUES ('idea_add', %s, %s)",
+        (typed, json.dumps({"title": "Undated note", "statement": "Typed alone."}))))
+    assert '<nav class="card-nav"' not in as_app(admin, web.card, str(typed))
+
+    # Demo mode omits sensitive neighbors from card navigation.
+    as_app(admin, lambda c: c.execute("""INSERT INTO pub.feedback_events (kind, idea_id, payload)
+                                         VALUES ('idea_sensitive', %s, '{"sensitive": true}')""", (coffee,)))
+    demo_build = as_app(admin, web.card, build, True)
+    assert coffee not in demo_build and f'id="nav-next" href="/idea/{new}"' in demo_build
+    assert "nav-next-active" not in demo_build
