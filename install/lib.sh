@@ -30,8 +30,10 @@ DB_CONTAINER=ideamachine-db
 RUN_LOCK=/run/ideamachine-run.lock
 # Corral's NAS worker runs from here (deployed from the infra repo).
 NAS_CORRAL_DIR="/mnt/fast/corral-worker"
-APPS_UID=568
-APPS_GID=568
+# Dedicated NAS user/groups managed by infra (ADR-025).
+IM_UID=3104
+IM_GID=3104
+HEARSAY_STREAM_GID=3102
 COMPOSE=(docker compose -f "$REPO_DIR/install/compose.yaml")
 
 say() { printf '\n==> %s\n' "$*"; }
@@ -201,7 +203,7 @@ web_feed() {
 reader_sql() {
     local sql="$1"
     shift
-    docker run --rm --network host --user "$APPS_UID:$APPS_GID" --env-file "$NAS_READER_ENV" "$@" --entrypoint sh \
+    docker run --rm --network host --user "$IM_UID:$IM_GID" --env-file "$NAS_READER_ENV" "$@" --entrypoint sh \
         "$(docker inspect -f '{{.Config.Image}}' "$DB_CONTAINER")" \
         -c 'exec psql "$IM_READER_DATABASE_URL" -X -v ON_ERROR_STOP=1 -tAc "$1"' sh "$sql"
 }
