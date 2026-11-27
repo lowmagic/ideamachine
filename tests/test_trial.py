@@ -351,3 +351,60 @@ def test_a_two_pass_trial_skips_empty_episodes_and_includes_review_cost(pipe, cf
     cli.main(["trial", "v5.3", "--model", terra, "--review-model", inkling, "--live", "--report"])
     cli_out = json.loads(capsys.readouterr().out)
     assert cli_out["report"]["cost_usd"] == r["cost_usd"] and cli_out["report"]["recall"] == r["recall"]
+
+    # --review-prompt v2 hashes to a distinct version and sends REVIEW_SYSTEM_V2 to the Pass-2 reviewer
+    p2_calls.clear()
+    v2 = extract.REVIEW_PROMPTS["v2"]
+    assert trial.version(terra, "medium", v5, review_model=inkling, review_effort="medium", review_system=v2) != cand[0]
+    s2 = trial.run(pipe, llm.OpenRouter(post=p1_post), v5, model=terra,
+                   review_client=llm.OpenRouter(post=p2_post), review_model=inkling, review_effort="medium",
+                   review_system=v2)
+    assert s2["reviewed"] == 2 and all(c["messages"][0]["content"] == v2 for c in p2_calls)
+    cli.main(["trial", "v5.3", "--model", terra, "--review-model", inkling, "--review-prompt", "v2",
+              "--live", "--report"])
+    cli_v2 = json.loads(capsys.readouterr().out)
+    assert cli_v2["report"]["episodes"] == r["episodes"]
+
+
+def test_review_live_reviews_existing_captures_without_pass1(pipe, cfg, stream, monkeypatch, capsys):
+    """--review-live feeds existing live im.items straight into Pass-2 review, reports drops/merges, leaves im.items
+    untouched, and doesn't double-count the review's cost in trial.report."""
+    run(pipe, cfg, stream)
+    v5 = extract.SYSTEM_V5_3
+    # Live Opus read: 2 captures on the lockfile episode (one real, one small talk), 1 on the database episode.
+    extract.run_stage(pipe, FakeClaude(both(DATABASE, "lockfile", "Did you see")), system=v5)
+    live_count = pipe.execute("SELECT count(*) FROM im.items").fetchone()[0]
+    assert live_count == 3
+
+    calls = []
+
+    def p2_post(body):
+        calls.append(body)
+        content = body["messages"][1]["content"]
+        if "lockfile" in content:
+            ans = {"kept": [{"ids": [1], "gist": "Pin the cache key to the lockfile hash."}],
+                   "dropped": [{"id": 2, "reason": "small talk"}]}
+        else:
+            ans = {"kept": [{"ids": [1], "gist": "Move off the managed database."}], "dropped": []}
+        return {"id": f"rl-{len(calls)}", "model": "thinkingmachines/inkling-2-small",
+                "usage": {"prompt_tokens": 800, "completion_tokens": 60, "cost": 0.0007},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    opus, inkling = "claude-opus-5-5", "thinkingmachines/inkling-2-small"
+    v2 = extract.REVIEW_PROMPTS["v2"]
+    stats = trial.review_live(pipe, llm.OpenRouter(post=p2_post), v5, opus, "medium", inkling, "medium", v2)
+    assert (stats["reviewed"], stats["items_before"], stats["items_after"], stats["review_drops"]) == (2, 3, 2, 1)
+    assert stats["cost_usd"] == pytest.approx(0.0014)
+    assert len(stats["changes"]) == 1 and stats["changes"][0]["dropped"][0]["reason"] == "small talk"
+    assert all(c["messages"][0]["content"] == v2 for c in calls)
+    assert pipe.execute("SELECT count(*) FROM im.items").fetchone()[0] == live_count   # live table untouched
+
+    # Re-running skips already-reviewed episodes; report doesn't double-count the review cost.
+    again = trial.review_live(pipe, llm.OpenRouter(post=p2_post), v5, opus, "medium", inkling, "medium", v2)
+    assert again["pending"] == 0 and again["reviewed"] == 0
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+    cli.main(["trial", "v5.3", "--review-live", "--model", opus, "--review-model", inkling,
+              "--review-prompt", "v2", "--report"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["report"]["episodes"] == 2 and out["report"]["cost_usd"] == pytest.approx(0.0014)
+    assert out["report"]["reference_captures"] == 3 and out["report"]["candidate_captures"] == 2
