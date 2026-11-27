@@ -6,4 +6,10 @@ set -euo pipefail
 
 # shellcheck source=SCRIPTDIR/../lib.sh
 . "$(dirname "$0")/../lib.sh"
+if [ "$#" -eq 0 ] || [ "${1:-}" = "run" ]; then
+    if ! flock -n "$RUN_LOCK" true 2>/dev/null; then
+        echo "waiting for another im run to finish ($RUN_LOCK)..." >&2
+    fi
+    exec flock "$RUN_LOCK" "${COMPOSE[@]}" run --rm -v "$NAS_SAVED:/saved" run "$@"
+fi
 exec "${COMPOSE[@]}" run --rm -v "$NAS_SAVED:/saved" run "$@"
