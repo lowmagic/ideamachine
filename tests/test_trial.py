@@ -408,3 +408,75 @@ def test_review_live_reviews_existing_captures_without_pass1(pipe, cfg, stream, 
     out = json.loads(capsys.readouterr().out)
     assert out["report"]["episodes"] == 2 and out["report"]["cost_usd"] == pytest.approx(0.0014)
     assert out["report"]["reference_captures"] == 3 and out["report"]["candidate_captures"] == 2
+
+
+def test_apply_review_updates_live_items_and_protects_curated_cards(pipe, cfg, stream, monkeypatch, capsys):
+    """--apply deletes dropped items, updates kept/merged gists in place (preserving item_ids and matches), protects
+    cards I kept/starred/edited, updates im.extractions, is idempotent, and keeps every invariant clean."""
+    from im import checks
+
+    run(pipe, cfg, stream)
+    v5 = extract.SYSTEM_V5_3
+    extract.run_stage(pipe, FakeClaude(both(DATABASE, "lockfile", "Did you see")), system=v5)
+    # Build live ideas/cards for all 3 items so we can verify card disappearance + feedback protection.
+    items = pipe.execute("SELECT item_id, quote, gist FROM im.items ORDER BY quote").fetchall()
+    idea_ids = {}
+    for item_id, quote, gist in items:
+        idea_id = pipe.execute(
+            """INSERT INTO im.ideas (title, statement, origin, segment_ids)
+               SELECT left(gist, 40), gist, 'captured', source_segment_ids FROM im.items WHERE item_id = %s
+               RETURNING idea_id""", (item_id,)).fetchone()[0]
+        pipe.execute("INSERT INTO im.idea_evidence (idea_id, item_id, relation, judged_by) VALUES (%s, %s, 'origin', 't')",
+                     (idea_id, item_id))
+        pipe.execute("INSERT INTO im.item_matches (item_id, decision, idea_id, judged_by) VALUES (%s, 'new', %s, 't')",
+                     (item_id, idea_id))
+        idea_ids[quote] = (item_id, idea_id)
+    assert pipe.execute("SELECT count(*) FROM pub.cards").fetchone()[0] == 3
+
+    # Star the database card so even if Inkling tries to drop it, --apply protects it.
+    db_item_id, db_idea_id = next(v for q, v in idea_ids.items() if DATABASE in q)
+    pipe.execute("INSERT INTO pub.feedback_events (kind, idea_id, payload) VALUES ('star', %s, '{}')", (db_idea_id,))
+
+    def p2_post(body):
+        content = body["messages"][1]["content"]
+        if "lockfile" in content:
+            # live_reads orders items by item_id, so look up which candidate number is the lockfile capture.
+            cands = content.split("Candidate captures:\n", 1)[1].splitlines()
+            lock_id = next(int(line.split(".", 1)[0]) for line in cands if ". Gist:" in line and "lockfile" in line)
+            drop_id = 3 - lock_id
+            ans = {"kept": [{"ids": [lock_id], "gist": "Updated: pin cache key to lockfile hash."}],
+                   "dropped": [{"id": drop_id, "reason": "small talk"}]}
+        else:
+            ans = {"kept": [], "dropped": [{"id": 1, "reason": "test drop of starred card"}]}
+        return {"id": "rl", "model": "thinkingmachines/inkling-2-small",
+                "usage": {"prompt_tokens": 800, "completion_tokens": 60, "cost": 0.0007},
+                "choices": [{"finish_reason": "stop", "message": {"content": json.dumps(ans), "refusal": None}}]}
+
+    opus, inkling = "claude-opus-5-5", "thinkingmachines/inkling-2-small"
+    v2 = extract.REVIEW_PROMPTS["v2"]
+    trial.review_live(pipe, llm.OpenRouter(post=p2_post), v5, opus, "medium", inkling, "medium", v2)
+
+    monkeypatch.setattr(cli.db, "pipeline_dsn", lambda: pipe.info.dsn + " password=" + pipe.info.password)
+    # Dry-run previews counts without mutating.
+    cli.main(["trial", "v5.3", "--apply", "--dry-run", "--model", opus, "--review-model", inkling,
+              "--review-prompt", "v2"])
+    dry = json.loads(capsys.readouterr().out)
+    assert (dry["episodes"], dry["items_before"], dry["items_after"], dry["items_deleted"],
+            dry["gists_updated"], dry["protected_by_feedback"]) == (2, 3, 2, 1, 1, 1)
+    assert pipe.execute("SELECT count(*) FROM im.items").fetchone()[0] == 3
+
+    # Real apply deletes the small-talk item, updates the kept gist in place, and protects the starred card.
+    cli.main(["trial", "v5.3", "--apply", "--model", opus, "--review-model", inkling, "--review-prompt", "v2"])
+    applied = json.loads(capsys.readouterr().out)
+    assert (applied["items_deleted"], applied["gists_updated"], applied["protected_by_feedback"],
+            applied["cards_before"], applied["cards_after"]) == (1, 1, 1, 3, 2)
+    lock_item_id = next(v[0] for q, v in idea_ids.items() if "lockfile" in q)
+    assert pipe.execute("SELECT gist FROM im.items WHERE item_id = %s", (lock_item_id,)).fetchone()[0] == \
+        "Updated: pin cache key to lockfile hash."
+    assert pipe.execute("SELECT 1 FROM im.items WHERE item_id = %s", (db_item_id,)).fetchone() is not None
+    assert all(not rows for rows in checks.run_checks(pipe).values())
+
+    # Idempotent: a second --apply is a no-op.
+    cli.main(["trial", "v5.3", "--apply", "--model", opus, "--review-model", inkling, "--review-prompt", "v2"])
+    again = json.loads(capsys.readouterr().out)
+    assert again["episodes"] == 0 and again["items_deleted"] == 0

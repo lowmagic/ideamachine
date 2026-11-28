@@ -369,11 +369,16 @@ def cmd_trial(args) -> None:
     x = cfg.extract
     system, schema = extract.PROMPTS[args.prompt], extract.SCHEMA_V5
     model, effort = args.model or x.model, args.effort or x.effort
-    review_model = args.review_model or (x.review_model if args.review_live else None)
+    review_model = args.review_model or (x.review_model if (args.review_live or args.apply) else None)
     review_effort = args.review_effort or x.review_effort
     review_system = extract.REVIEW_PROMPTS[args.review_prompt]
-    if args.review_live and not review_model:
-        raise SystemExit("--review-live requires --review-model (or [extract] review_model in im.toml)")
+    if (args.review_live or args.apply) and not review_model:
+        raise SystemExit("--review-live / --apply requires --review-model (or [extract] review_model in im.toml)")
+    if args.apply:
+        with db.connect(db.pipeline_dsn()) as conn:
+            _print(trial.apply_review(conn, system, model, effort, review_model, review_effort, review_system,
+                                      args.replicate, schema, dry_run=args.dry_run))
+        return
     live_ref = args.live or args.review_live
     ref_model, _, ref_effort = (args.against or (f"{model}:{effort}" if args.review_live else f"{x.model}:{x.effort}")).partition(":")
     ref_effort = ref_effort or (effort if args.review_live else x.effort)
@@ -974,6 +979,10 @@ def main(argv=None) -> None:
                     help="Pass-2 reviewer prompt in extract.REVIEW_PROMPTS (default: v2)")
     tr.add_argument("--review-live", action="store_true",
                     help="run Pass-2 review directly over existing live captures for --model without re-running Pass 1")
+    tr.add_argument("--apply", action="store_true",
+                    help="apply a completed --review-live trial onto live im.items and im.extractions (protects "
+                         "kept/starred/edited cards)")
+    tr.add_argument("--dry-run", action="store_true", help="with --apply: preview counts without modifying live rows")
     tr.add_argument("--episodes", nargs="+", metavar="UUID",
                     help="specific episode UUID(s) to review with --review-live instead of the random sample")
     tr.add_argument("--max-tokens", type=int, help="each request's output budget, reasoning included; not part of "
