@@ -482,6 +482,30 @@ def cmd_audit_edges(args) -> None:
         _print(edge_audit.write(conn, Path(args.folder), args.seed, args.size, [Path(f) for f in args.exclude]))
 
 
+def cmd_trial_synthesis(args) -> None:
+    """Blind A/B trial for Synthesis (docs/design/synthesis.md): sheet, draft, review, score."""
+    from pathlib import Path
+
+    from im import llm, synth_trial
+
+    folder = Path(args.folder)
+    if args.action == "review":
+        _print(synth_trial.review(folder))
+        return
+    if args.action == "score":
+        _print(synth_trial.score(folder))
+        return
+    with db.connect(db.pipeline_dsn()) as conn:
+        if args.action == "sheet":
+            _print(synth_trial.sheet(conn, folder, args.size, args.seed))
+            return
+        cfg = config.load()
+        model = args.model or cfg.extract.model
+        effort = args.effort or cfg.extract.effort
+        client = llm.client_for(model, cfg.egress.zdr)
+        _print(synth_trial.draft(conn, client, folder, model, effort, cfg.extract.monthly_cap_usd))
+
+
 def cmd_audit_eligibility(args) -> None:
     """Capture eligibility: a random sample of live captures, labeled by two models under a frozen rubric; the items
     they split on, and some they agree on, marked by me blind; then their agreement and the ineligible rate."""
@@ -1025,6 +1049,15 @@ def main(argv=None) -> None:
                     help="draft: the candidate model, e.g. openai/gpt-6.1-terra, or jev-1.14.0 (TypeSafe's Jev)")
     ae.add_argument("--effort", default="low", help="draft: the candidate's effort")
     ae.set_defaults(func=cmd_audit_edges)
+    ts = sub.add_parser("trial-synthesis", help="blind A/B trial for Synthesis on connected neighborhoods (sheet, "
+                        "draft, review, score; writes nothing to im.ideas)")
+    ts.add_argument("action", choices=["sheet", "draft", "review", "score"])
+    ts.add_argument("folder", help="where key.json, drafts and review.md go (keep it in /saved/)")
+    ts.add_argument("--size", type=int, default=15, help="sheet: how many neighborhoods to sample (default: 15)")
+    ts.add_argument("--seed", type=int, default=1, help="sheet: sample seed (default: 1)")
+    ts.add_argument("--model", help="draft: candidate model, e.g. openai/gpt-6.1-terra or thinkingmachines/inkling-2-small")
+    ts.add_argument("--effort", help="draft: reasoning effort (default: [extract] effort)")
+    ts.set_defaults(func=cmd_trial_synthesis)
     ael = sub.add_parser("audit-eligibility", help="capture eligibility: a random sample of live captures, labeled "
                          "by two models under a frozen rubric; I mark where they split, and some where they agree, "
                          "blind (sheet, review and score send nothing; draft sends to the model)")
